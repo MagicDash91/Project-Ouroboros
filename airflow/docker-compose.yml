@@ -1,0 +1,46 @@
+name: uaa-airflow
+services:
+  airflow-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+    - airflow-db:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - airflow
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+  airflow:
+    build: .
+    command: standalone
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    ports:
+    - 8085:8080
+    env_file:
+    - .env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'False'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'False'
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: uaa:admin
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/passwords.json
+    volumes:
+    - ./dags:/opt/airflow/dags
+    - ./passwords.json:/opt/airflow/passwords.json
+    - ../dbt/uaa:/opt/uaa/dbt
+    - ./profiles:/opt/uaa/profiles:ro
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    restart: unless-stopped
+volumes:
+  airflow-db: {}

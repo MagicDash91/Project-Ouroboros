@@ -1,0 +1,59 @@
+version: 2
+models:
+- name: fct_sales_monthly
+  description: One row per order line with net revenue, cost and gross profit, enriched
+    with order, channel, customer region and product category. Only completed orders
+    are included. Use it to analyse revenue, gross profit and margin by month, channel,
+    province and category.
+  columns:
+  - name: order_item_id
+    description: Unique identifier of the order line item.
+    data_tests:
+    - not_null
+    - unique
+  - name: order_id
+    description: Order the line belongs to.
+    data_tests:
+    - not_null
+  - name: order_month
+    description: First day of the month in which the order was placed, used for monthly
+      reporting.
+    data_tests:
+    - not_null
+  - name: order_date
+    description: Date the order was placed.
+  - name: channel_id
+    description: Sales channel of the order.
+    data_tests:
+    - not_null
+  - name: channel_name
+    description: Name of the sales channel.
+    data_tests:
+    - accepted_values:
+        arguments:
+          values:
+          - Offline Retail
+          - E-commerce
+          - Modern Trade
+          - Traditional Trade
+  - name: province
+    description: Province of the customer who placed the order.
+  - name: category
+    description: Product category of the line item.
+    data_tests:
+    - accepted_values:
+        arguments:
+          values:
+          - Beverages
+          - Snacks
+          - Personal Care
+          - Household
+          - Dairy
+  - name: quantity
+    description: Number of units on the line.
+  - name: net_revenue
+    description: 'Revenue after discount: unit price x quantity x (1 - discount).'
+  - name: cost_of_goods
+    description: Total unit cost of the line item.
+  - name: gross_profit
+    description: Net revenue minus cost of goods.

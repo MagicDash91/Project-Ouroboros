@@ -1,0 +1,13 @@
+# Additional dependencies for the new feature set (Cerebras LLM + Features 1,2,3,5).
+# Install into the project venv:  pip install -r requirements-features.txt
+#
+# (These are already present in the shared D:\Langsmith-main\venv.)
+
+cerebras_cloud_sdk      # Cerebras gpt-oss-120b client (primary LLM)
+joblib                  # model artifact load/save (Feature 1 scoring)
+scikit-learn            # preprocessing, TF-IDF retriever fallback
+shap                    # driver / SHAP analysis (Feature 3)
+faiss-cpu               # vector index for document RAG (Feature 5)
+sentence-transformers   # embeddings for RAG (falls back to TF-IDF if unavailable)
+httpx                   # webhook delivery for drift alerts (Feature 2)
+langchain-openai        # Cerebras-backed LangChain chat model (graphs/tools)

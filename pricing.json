@@ -1,0 +1,60 @@
+{
+  "version": "2026-10-12",
+  "credit_value_usd": 0.01,
+  "credit_value_idr": 159,
+  "idr_note": "IDR prices are set separately, not converted live.",
+  "actions": {
+    "analytics_run":        {"credits": 900, "label": "Analytics run", "detail": "Plan → dbt → crew → dashboard → report → campaign"},
+    "analytics_run_lite":   {"credits": 600, "label": "Analytics run without marketing", "detail": "Everything except the marketing stage"},
+    "dashboard_page":       {"credits": 5,   "label": "Extra dashboard page", "detail": "One Claude design call; filtering and refreshing are free"},
+    "datachat_question":    {"credits": 5,   "label": "Data chat question", "detail": "Answer with the SQL / Python behind it"},
+    "agent_task":           {"credits": 100, "label": "Agent task", "detail": "Includes up to 8 web searches; planning is free", "included_searches": 8},
+    "agent_extra_search":   {"credits": 10,  "label": "Agent web search after the 8th", "detail": "Charged as it happens"},
+    "agent_subagent":       {"credits": 40,  "label": "Parallel researcher", "detail": "Each researcher runs up to 4 web searches", "included_searches": 4},
+    "workflow_web_search":  {"credits": 10,  "label": "Workflow · Web search step", "detail": "Per run"},
+    "workflow_ai_insights": {"credits": 2,   "label": "Workflow · AI insights step", "detail": "Per run"},
+    "workflow_ai_report":   {"credits": 5,   "label": "Workflow · Report step with AI text", "detail": "Per run; layout-only reports are free"},
+    "workflow_ai_classify": {"credits": 5,   "label": "Workflow · AI classify step", "detail": "Per run, up to 500 rows labelled"},
+    "model_lab":            {"credits": 2,   "label": "Model lab call", "detail": "Scoring, SHAP drivers, what-if, NL→SQL"},
+    "rag_question":         {"credits": 3,   "label": "Document Q&A question", "detail": "Cited answer over your documents"},
+    "agent_ai_edit":        {"credits": 3,   "label": "AI edit of a deck or document", "detail": "One instruction to Claude in the Agent's deck or document editor; manual edits and exports are free"}
+  },
+  "free_actions": ["Planning (Analytics and Agent)", "Editing, presenting and exporting Agent decks and documents by hand", "Dashboard filtering and refreshing", "Building and editing workflows with AI", "Deterministic workflow steps"],
+  "plans": [
+    {"id": "free", "name": "Free", "tagline": "Try a full analysis on your own data.",
+     "usd_month": 0, "idr_month": 0, "usd_year": 0, "idr_year": 0,
+     "credits_month": 150, "signup_credits": 1000, "equals": "1 Analytics run + 20 questions at signup",
+     "seats": "1", "schedules": "—", "concurrent": "1", "upload_mb": "25 MB", "db_connections": "1",
+     "airflow": false, "shared_workspace": false, "enterprise": false, "spend_cap_usd": 20},
+    {"id": "starter", "name": "Starter", "tagline": "Quick answers from your files and databases.",
+     "usd_month": 12, "idr_month": 189000, "usd_year": 120, "idr_year": 1890000,
+     "credits_month": 1500, "equals": "300 Data chat questions",
+     "seats": "1", "schedules": "2, daily or slower", "concurrent": "1", "upload_mb": "100 MB", "db_connections": "2",
+     "airflow": false, "shared_workspace": false, "enterprise": false, "spend_cap_usd": 24},
+    {"id": "pro", "name": "Pro", "tagline": "The full desk for one analyst: dbt, dashboards, reports and campaigns.", "popular": true,
+     "usd_month": 29, "idr_month": 449000, "usd_year": 290, "idr_year": 4490000,
+     "credits_month": 6000, "equals": "5 runs + 300 questions",
+     "seats": "1", "schedules": "10, hourly allowed", "concurrent": "2", "upload_mb": "200 MB", "db_connections": "5",
+     "airflow": true, "shared_workspace": false, "enterprise": false, "spend_cap_usd": 58},
+    {"id": "team", "name": "Team", "tagline": "One shared desk for your data and marketing team.",
+     "usd_month": 149, "idr_month": 2290000, "usd_year": 1490, "idr_year": 22900000,
+     "credits_month": 35000, "equals": "25 runs + 2,500 questions",
+     "seats": "5 (+$25 / Rp 399.000 per extra seat)", "schedules": "50, hourly allowed", "concurrent": "5", "upload_mb": "200 MB", "db_connections": "Unlimited",
+     "airflow": true, "shared_workspace": true, "enterprise": false, "spend_cap_usd": 298},
+    {"id": "enterprise", "name": "Enterprise", "tagline": "Private deployment for regulated data, with PII masked by design.",
+     "usd_month": null, "idr_month": null, "usd_year": null, "idr_year": 75000000,
+     "credits_month": null, "equals": "Contracted",
+     "seats": "Unlimited", "schedules": "Unlimited", "concurrent": "Contracted", "upload_mb": "Custom", "db_connections": "Unlimited",
+     "airflow": true, "shared_workspace": true, "enterprise": true, "spend_cap_usd": null, "contact": true}
+  ],
+  "packs": [
+    {"id": "small",  "name": "Small",  "credits": 1000,  "usd": 10,  "idr": 159000},
+    {"id": "medium", "name": "Medium", "credits": 5000,  "usd": 45,  "idr": 699000, "popular": true},
+    {"id": "large",  "name": "Large",  "credits": 20000, "usd": 160, "idr": 2490000}
+  ],
+  "rules": {
+    "rollover_pct_of_allowance": 50,
+    "spend_order": ["rollover", "plan", "free_monthly", "free_signup", "topup"],
+    "auto_topup_below": 200
+  }
+}

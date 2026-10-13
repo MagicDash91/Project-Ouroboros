@@ -1,0 +1,277 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Palette: warm paper, ink, and a single vermilion signal colour.
+   Stored as RGB triplets so Tailwind can apply alpha (bg-ink/5 etc). */
+:root {
+  --paper: 243 239 231;
+  --sheet: 251 249 244;
+  --ink: 24 22 19;
+  --graphite: 72 67 61;
+  --mute: 125 117 107;
+  --rule: 216 207 193;
+  --signal: 206 64 27;
+  --moss: 46 102 80;
+  --ochre: 168 113 17;
+  --night: 22 21 19;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: rgb(var(--paper));
+  color: rgb(var(--ink));
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "tnum";
+}
+
+/* Paper grain: a faint fractal-noise layer, fixed so it doesn't scroll with content. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60;
+  opacity: 0.32;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.45 0 0 0 0 0.4 0 0 0 0 0.33 0 0 0 .09 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+::selection {
+  background: rgb(var(--signal) / 0.18);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--rule)) transparent;
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--signal));
+  outline-offset: 2px;
+}
+
+@layer components {
+  .label {
+    @apply font-sans text-[10.5px] font-semibold uppercase tracking-label text-mute;
+  }
+  .field {
+    @apply w-full rounded-[3px] border border-rule bg-sheet px-3 py-2 text-[13px] text-ink placeholder:text-mute/70 transition-colors focus:border-ink focus:outline-none;
+  }
+  .hairline {
+    @apply border-rule;
+  }
+}
+
+/* ── Long-form report typography (markdown from the agents) ───────────── */
+.prose-report {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 17px;
+  line-height: 1.68;
+  color: rgb(var(--ink) / 0.92);
+}
+.prose-report > * + * {
+  margin-top: 0.9em;
+}
+.prose-report h1 {
+  font-size: 2.1rem;
+  line-height: 1.12;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  margin-top: 0;
+}
+.prose-report h2 {
+  font-size: 1.45rem;
+  line-height: 1.2;
+  font-weight: 500;
+  margin-top: 2.2em;
+  padding-top: 0.9em;
+  border-top: 1px solid rgb(var(--rule));
+}
+.prose-report h3 {
+  font-family: var(--font-sans), sans-serif;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgb(var(--signal));
+  margin-top: 1.9em;
+}
+.prose-report h4 {
+  font-weight: 600;
+  margin-top: 1.4em;
+}
+.prose-report ul,
+.prose-report ol {
+  padding-left: 1.3em;
+}
+.prose-report ul {
+  list-style: none;
+}
+.prose-report ul > li {
+  position: relative;
+}
+.prose-report ul > li::before {
+  content: "";
+  position: absolute;
+  left: -1.05em;
+  top: 0.78em;
+  width: 0.45em;
+  height: 1px;
+  background: rgb(var(--signal));
+}
+.prose-report ol {
+  list-style: decimal;
+}
+.prose-report ol > li::marker {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.8em;
+  color: rgb(var(--mute));
+}
+.prose-report li + li {
+  margin-top: 0.3em;
+}
+.prose-report strong {
+  font-weight: 600;
+  color: rgb(var(--ink));
+}
+.prose-report a {
+  color: rgb(var(--signal));
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.prose-report blockquote {
+  border-left: 2px solid rgb(var(--signal));
+  padding-left: 1.1em;
+  font-style: italic;
+  color: rgb(var(--graphite));
+}
+.prose-report code {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.82em;
+  background: rgb(var(--ink) / 0.06);
+  padding: 0.1em 0.35em;
+  border-radius: 2px;
+}
+.prose-report pre {
+  background: rgb(var(--night));
+  color: rgb(var(--paper));
+  padding: 1em 1.2em;
+  overflow-x: auto;
+  border-radius: 3px;
+  font-size: 0.8em;
+}
+.prose-report pre code {
+  background: none;
+  padding: 0;
+}
+.prose-report table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans), sans-serif;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  display: block;
+  overflow-x: auto;
+}
+.prose-report thead th {
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgb(var(--mute));
+  border-bottom: 1.5px solid rgb(var(--ink));
+  padding: 0.5em 0.9em 0.5em 0;
+}
+.prose-report td {
+  border-bottom: 1px solid rgb(var(--rule));
+  padding: 0.55em 0.9em 0.55em 0;
+  vertical-align: top;
+}
+.prose-report hr {
+  border: 0;
+  border-top: 1px solid rgb(var(--rule));
+}
+
+/* Compact variant for chat bubbles and small panels */
+.prose-compact {
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+.prose-compact h1,
+.prose-compact h2 {
+  font-size: 1.1rem;
+  border: 0;
+  padding: 0;
+  margin-top: 1em;
+}
+
+/* ── Motion ──────────────────────────────────────────────────────────── */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise {
+  animation: rise 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+.sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, rgb(var(--signal) / 0.55), transparent);
+  animation: sweep 1.6s ease-in-out infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+.blink {
+  animation: blink 1.1s steps(2, start) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise,
+  .sweep::after,
+  .blink {
+    animation: none;
+  }
+}
+
+/* vis-network tooltip, restyled to match the page */
+div.vis-tooltip {
+  font-family: var(--font-sans), sans-serif !important;
+  font-size: 12px !important;
+  background: rgb(var(--sheet)) !important;
+  color: rgb(var(--ink)) !important;
+  border: 1px solid rgb(var(--ink)) !important;
+  border-radius: 2px !important;
+  box-shadow: 4px 4px 0 rgb(var(--ink) / 0.12) !important;
+  padding: 8px 10px !important;
+  max-width: 260px;
+  white-space: normal !important;
+}

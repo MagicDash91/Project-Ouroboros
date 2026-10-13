@@ -1,0 +1,204 @@
+version: 2
+models:
+- name: stg_regions
+  description: Cleaned list of Indonesian provinces with their island and city tier
+    classification.
+  columns:
+  - name: region_id
+    description: Unique identifier of the region.
+    data_tests:
+    - not_null
+    - unique
+  - name: province
+    description: Name of the province.
+    data_tests:
+    - not_null
+  - name: island
+    description: Island group the province belongs to.
+    data_tests:
+    - accepted_values:
+        arguments:
+          values:
+          - Java
+          - Bali
+          - Sumatra
+          - Sulawesi
+          - Kalimantan
+  - name: city_tier
+    description: City tier classification of the region.
+    data_tests:
+    - accepted_values:
+        arguments:
+          values:
+          - Tier 1
+          - Tier 2
+          - Tier 3
+- name: stg_customers
+  description: Cleaned customer records with demographic, segment and region attributes.
+  columns:
+  - name: customer_id
+    description: Unique identifier of the customer.
+    data_tests:
+    - not_null
+    - unique
+  - name: customer_name
+    description: Full name of the customer.
+  - name: gender
+    description: Gender of the customer.
+    data_tests:
+    - accepted_values:
+        arguments:
+          values:
+          - Female
+          - Male
+  - name: age
+    description: Age of the customer in years.
+  - name: segment
+    description: Customer business segment.
+    data_tests:
+    - accepted_values:
+        arguments:
+          values:
+          - Consumer
+          - Corporate
+          - SME
+  - name: region_id
+    description: Region where the customer is located.
+    data_tests:
+    - not_null
+    - relationships:
+        arguments:
+          to: ref('stg_regions')
+          field: region_id
+  - name: signup_date
+    description: Date the customer signed up.
+  - name: is_member
+    description: Whether the customer is a loyalty member.
+- name: stg_orders
+  description: Cleaned order headers with channel, status, payment and discount information.
+  columns:
+  - name: order_id
+    description: Unique identifier of the order.
+    data_tests:
+    - not_null
+    - unique
+  - name: customer_id
+    description: Customer who placed the order.
+    data_tests:
+    - not_null
+    - relationships:
+        arguments:
+          to: ref('stg_customers')
+          field: customer_id
+  - name: channel_id
+    description: Sales channel through which the order was placed.
+    data_tests:
+    - relationships:
+        arguments:
+          to: ref('stg_sales_channels')
+          field: channel_id
+  - name: order_date
+    description: Date the order was placed.
+    data_tests:
+    - not_null
+  - name: status
+    description: Fulfilment status of the order.
+    data_tests:
+    - accepted_values:
+        arguments:
+          values:
+          - Completed
+          - Cancelled
+          - Returned
+  - name: payment_method
+    description: Payment method used for the order.
+    data_tests:
+    - accepted_values:
+        arguments:
+          values:
+          - Cash
+          - E-Wallet
+          - Credit Card
+          - Debit Card
+          - Cash on Delivery
+          - Bank Transfer
+  - name: discount_pct
+    description: Discount percentage applied to the order.
+- name: stg_sales_channels
+  description: Sales channel reference data with price factor.
+  columns:
+  - name: channel_id
+    description: Unique identifier of the sales channel.
+    data_tests:
+    - not_null
+    - unique
+  - name: channel_name
+    description: Name of the sales channel.
+    data_tests:
+    - accepted_values:
+        arguments:
+          values:
+          - Offline Retail
+          - E-commerce
+          - Modern Trade
+          - Traditional Trade
+  - name: description
+    description: Description of the sales channel.
+  - name: price_factor
+    description: Price multiplier applied to channel sales.
+- name: stg_order_items
+  description: Cleaned order line items with product, quantity and unit price.
+  columns:
+  - name: order_item_id
+    description: Unique identifier of the order line item.
+    data_tests:
+    - not_null
+    - unique
+  - name: order_id
+    description: Order the line item belongs to.
+    data_tests:
+    - not_null
+    - relationships:
+        arguments:
+          to: ref('stg_orders')
+          field: order_id
+  - name: product_id
+    description: Product sold on the line item.
+    data_tests:
+    - not_null
+    - relationships:
+        arguments:
+          to: ref('stg_products')
+          field: product_id
+  - name: quantity
+    description: Number of units sold on the line item.
+  - name: unit_price
+    description: Selling price per unit on the line item.
+- name: stg_products
+  description: Cleaned product catalogue with category, brand, list price and unit
+    cost.
+  columns:
+  - name: product_id
+    description: Unique identifier of the product.
+    data_tests:
+    - not_null
+    - unique
+  - name: product_name
+    description: Name of the product.
+  - name: category
+    description: Product category.
+    data_tests:
+    - accepted_values:
+        arguments:
+          values:
+          - Beverages
+          - Snacks
+          - Personal Care
+          - Household
+          - Dairy
+  - name: brand
+    description: Brand of the product.
+  - name: list_price
+    description: Standard list price of the product.
+  - name: unit_cost
+    description: Cost to acquire or produce one unit of the product.

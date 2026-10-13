@@ -1,0 +1,11 @@
+version: 2
+sources:
+- name: raw
+  schema: retail
+  tables:
+  - name: regions
+  - name: customers
+  - name: orders
+  - name: sales_channels
+  - name: order_items
+  - name: products

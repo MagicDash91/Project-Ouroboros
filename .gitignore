@@ -1,0 +1,41 @@
+# ── Secrets: never commit ─────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+**/passwords.json
+service-account*.json
+
+# ── Private runtime data (chats, runs, wallet, OAuth tokens, uploads, brand kits, shares) ──
+data/
+
+# ── Generated output (charts, reports, uploads, agent deliverables, logos) ──
+outputs/
+
+# ── Python ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# ── dbt / Airflow artifacts ───────────────────────────────────────────
+dbt/uaa/target/
+dbt/uaa/logs/
+dbt/uaa/dbt_packages/
+airflow/logs/
+
+# ── Frontend (also in frontend/.gitignore) ────────────────────────────
+frontend/node_modules/
+frontend/.next/
+
+# ── Local clutter ─────────────────────────────────────────────────────
+*.stackdump
+*.db
+*.sqlite
+*.log
+.DS_Store
+Thumbs.db
+
+# ── Licensing: hero.jpg is a copyrighted painting kept for local preview only ──
+frontend/public/art/hero.jpg
