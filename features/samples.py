@@ -11,8 +11,7 @@ and has patterns worth finding:
   * an Independence Day promo on 17 August; a few rows with a blank region (for quality checks);
   * short customer reviews (for AI classify) and fake customer emails (to show personal-data masking).
 
-The starters below hand the sample to each app: a Data chat session, Analytics upload ids,
-Agent attachments, and a ready-made Workflow.
+It is the "fnb" industry kit; features/kits.py hands it (and the other kits) to each app.
 """
 
 import random
@@ -143,55 +142,3 @@ def info() -> dict:
             "orders": int(sales["order_id"].nunique()), "rows": int(len(sales)),
             "description": "A fictional Indonesian coffee & snacks chain: 2025 sales across 8 cities and 5 channels, "
                            "customers and marketing campaigns."}
-
-
-# ── Starters for each app ───────────────────────────────────────────────────
-
-ANALYTICS_BRIEF = ("Analyse Kopi Nusantara's 2025 sales: which channels, cities and product categories drive revenue "
-                   "and margin, how Ramadan and the 11.11 / 12.12 shopping days changed sales, and which marketing "
-                   "campaigns paid back. Recommend where to focus in 2026.")
-AGENT_GOAL = ("Using the attached Kopi Nusantara sales data and web research on current Indonesian coffee chain "
-              "prices (Kopi Kenangan, Fore, Janji Jiwa), check whether our menu prices are competitive and write a "
-              "short pricing report with recommendations.")
-
-
-def start_datachat() -> dict:
-    from features import data_chat
-    s = data_chat.create_session([(n, b) for n, b in files() if n != "customers.csv"])
-    sess = data_chat.get_session(s["id"])
-    sess.r["title"] = NAME
-    sess.save()
-    return sess.public()
-
-
-def start_workflow() -> dict:
-    """A ready-made workflow on the sample: monthly revenue per channel, growth, a chart, AI insights and an export."""
-    from features import workflow
-
-    def N(i, t, label, cfg, x, y):
-        return {"id": i, "type": t, "label": label, "position": {"x": x, "y": y}, "config": cfg}
-
-    nodes = [
-        N("src", "upload", "Sample sales", {"file": "sales_2025.csv"}, 0, 120),
-        N("qc", "quality_check", "Check the data", {"rules": "not_null: order_id, revenue\nnot_null: region\nbetween: rating, 1, 5",
-                                                     "on_fail": "continue"}, 260, 120),
-        N("month", "date_tools", "Month", {"column": "order_date", "operation": "month"}, 520, 120),
-        N("agg", "aggregate", "Revenue by month & channel", {"group_by": ["order_date_month", "channel"],
-                                                              "column": "revenue", "function": "sum"}, 780, 120),
-        N("growth", "calculate", "Month-on-month growth", {"operation": "pct_change", "column": "revenue",
-                                                           "order_by": "order_date_month", "group_by": ["channel"],
-                                                           "new_column": "growth_pct"}, 1040, 40),
-        N("chart", "chart", "Revenue by channel", {"kind": "line", "x": "order_date_month", "y": "revenue",
-                                                   "color": "channel", "title": "Monthly revenue by channel, 2025"}, 1040, 220),
-        N("ai", "ai_insights", "What changed?", {"mode": "insights"}, 1300, 40),
-        N("export", "export", "Excel", {"format": "xlsx", "filename": "kopi_nusantara_monthly"}, 1300, 220),
-    ]
-    edges = [{"source": a, "target": b} for a, b in (("src", "qc"), ("qc", "month"), ("month", "agg"), ("agg", "growth"),
-                                                       ("agg", "chart"), ("growth", "ai"), ("growth", "export"))]
-    w = workflow.create("Kopi Nusantara · monthly channel check (sample)", nodes, edges,
-                        "Sample workflow: checks the data, sums revenue per month and channel, computes growth, "
-                        "draws a chart, asks the AI what changed and exports to Excel. Press Run.")
-    for name, data in files():
-        if name == "sales_2025.csv":
-            workflow.add_file(w["id"], name, data)
-    return workflow.get(w["id"])

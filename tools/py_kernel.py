@@ -109,6 +109,20 @@ def main(project_root: str) -> None:
     ns = {"__builtins__": {**SAFE_BUILTINS, "__import__": _guarded_import},
           "pd": pd, "np": np, "px": px, "go": go, "alt": alt, "plt": plt, "sns": sns, "bk": bk,
           "THEME": dict(cs.THEME)}
+
+    # Trusted analysis helpers (tools/insights.py): they show their chart and return their table.
+    from tools import insights
+
+    def _shows_chart(fn):
+        def run(*args, **kwargs):
+            fig, table = fn(*args, **kwargs)
+            ns["fig"] = fig
+            return table
+        run.__name__, run.__doc__ = fn.__name__, fn.__doc__
+        return run
+
+    ns["explain_change"] = _shows_chart(insights.explain_change)
+    ns["forecast"] = _shows_chart(insights.forecast)
     out_dir = "."
     results_dir = ""
     pii_key = b""

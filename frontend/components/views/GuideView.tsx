@@ -22,6 +22,8 @@ Ouroboros is several apps on one desk. Switch between them with the rail on the 
 | **Analytics** | You want a full, end-to-end analysis of a dataset | A strategic plan you approve, dbt models, forecasts / segments / classifiers, AI-written charts, a Power BI-style dashboard, PDF + PowerPoint reports, and a marketing campaign |
 | **Data chat** | You have a quick question about a file or database | A short answer with the SQL / Python behind it, tables and charts |
 
+**New here?** On the Home page, **Start here** lets you pick your industry (food & beverage, retail, banking or marketing) and try every app on a fictional sample company: no data needed.
+
 ### How it is built
 
 - **Frontend**: Next.js 14 + Tailwind on port **3010**
@@ -143,6 +145,15 @@ Finished runs, chat history, dashboards and dbt builds are saved and survive bac
 
 The **Glossary** in the side panel holds your business definitions (e.g. *active customer = ordered in the last 90 days*); every answer applies them.
 
+### Why did it change? Forecasts and what-if
+
+- Ask **"why did revenue drop in September?"** and the answer splits the change across every category (branch, product, channel…), names the groups that moved differently from the overall trend, looks one level inside the biggest one and draws a waterfall chart. Compare months, quarters, years, any two date ranges, or the same period last year.
+- Ask **"forecast sales for the next 3 months"** for a forecast with a likely range (80% of outcomes) and how accurate the model was on recent months it had not seen.
+- Ask **"what if we raise prices 5%?"**: the answer states the assumption it used (for example, how much volume drops), shows the arithmetic and draws the scenario next to the forecast.
+- These numbers are calculated in Python, not by the AI. Explanations work on totals (revenue, orders, NPL balance); for a ratio such as conversion rate or NPL ratio they explain the top and the bottom of the fraction.
+
+**Industry kits:** on the Home page, *Start here* opens a sample company for food & beverage, retail, banking or marketing, with metric definitions and six questions ready to click.
+
 The agent has three tools, all read-only:
 
 | Tool | What it does |
@@ -158,6 +169,8 @@ The agent has three tools, all read-only:
 - Show monthly revenue for the last 12 months as a line chart.
 - Which customer segment has the highest average order value?
 - Compare discount percentage against order value. Is there a relationship?
+- Why did revenue change in March compared with February?
+- Forecast monthly revenue for the next quarter. What if we raise prices 5% and lose 4% of orders?
 
 ### How long answers take
 

@@ -6,6 +6,9 @@ Everything runs on **Claude Haiku 5.5**, with **LangGraph** and **CrewAI** for t
 
 It isn't tied to one industry or dataset: the agents, charts and dashboards adapt to whatever is connected — retail sales, churn, fraud, credit risk, documents, or no data at all.
 
+![Automatic dashboard](static/o9.JPG)
+<sub>An Analytics run on a retail database: the automatic, filterable dashboard (KPI cards, trends, breakdowns).</sub>
+
 ---
 
 ## Contents
@@ -34,6 +37,14 @@ It isn't tied to one industry or dataset: the agents, charts and dashboards adap
 
 ## The apps
 
+![Home page](static/o1.JPG)
+<sub>The Home page: the brief in one sentence, then Start here.</sub>
+
+<table><tr>
+<td width="50%"><img src="static/o2.JPG" alt="Start here with industry kits"><br><sub>Home → Start here: pick an industry kit and try every app on a fictional company.</sub></td>
+<td width="50%"><img src="static/o4.JPG" alt="Four ways to work"><br><sub>The four apps: Analytics, Data chat, Agent and Workflow, with their credit cost.</sub></td>
+</tr></table>
+
 The left rail switches between seven apps that share one backend:
 
 | App | Use it when | You get |
@@ -51,6 +62,12 @@ The left rail switches between seven apps that share one backend:
 ## How it compares
 
 Most tools cover one or two steps; this desk covers the chain from data engineering to the campaign that acts on it.
+
+![Comparison table](static/o6.JPG)
+<sub>The comparison table on the Home page (capabilities by category).</sub>
+
+![Comparison table, continued](static/o7.JPG)
+<sub>The comparison continued: outputs, trust & security, and autonomy.</sub>
 
 | Capability | This desk | Julius AI | Manus AI | ChatGPT data analysis | Power BI Copilot | Databricks Genie |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|
@@ -70,6 +87,9 @@ Most tools cover one or two steps; this desk covers the chain from data engineer
 ---
 
 ## Architecture
+
+![One brief, the whole chain](static/o3.JPG)
+<sub>What Ouroboros is: one brief runs the whole chain (plan, engineer, model, show, report, act).</sub>
 
 ```mermaid
 flowchart LR
@@ -127,6 +147,9 @@ flowchart LR
 
 ### How a run works
 
+![The wire](static/o8.JPG)
+<sub>The wire: a live log of the run, from LangGraph planning and your approval to the CrewAI teams and dbt.</sub>
+
 1. **Brief & sources** — describe what you want to know; optionally connect a database (with schema), upload files, and fill in the marketing fields.
 2. **Connect** — the connection string is normalised for its provider.
 3. **Strategic plan** — a LangGraph planner drafts the analysis plan and a preliminary report.
@@ -165,10 +188,38 @@ flowchart LR
 | Ask | **Conversation** (follow-up questions, charts, document retrieval) · **Graph** (Zep knowledge graph) |
 | Tools | **Data models** (dbt lineage, SQL, tests, Airflow) · **Model lab** (scoring, SHAP drivers, what-if) · **Monitoring** (drift alerts) · **Documents** (RAG Q&A) |
 
+<table><tr>
+<td width="50%"><img src="static/o10.JPG" alt="Analytics report"><br><sub>Analytics report: executive briefing, editable as a deck or Word document, with every export on the right.</sub></td>
+<td width="50%"><img src="static/o11.JPG" alt="Figures with readings"><br><sub>Each figure comes with the model's reading of the plotted data and what to do about it.</sub></td>
+</tr></table>
+
+<table><tr>
+<td width="50%"><img src="static/o12.JPG" alt="Chart room"><br><sub>Chart room: every AI-written chart of the run.</sub></td>
+<td width="50%"><img src="static/o16.JPG" alt="Conversation"><br><sub>Conversation: ask the desk about this run.</sub></td>
+</tr></table>
+
+<table><tr>
+<td width="50%"><img src="static/o13.JPG" alt="Campaign brief"><br><sub>Marketing: the CDO's campaign brief, written from the analysts' findings.</sub></td>
+<td width="50%"><img src="static/o14.JPG" alt="Content"><br><sub>Content: social posts and ad copy for Instagram, LinkedIn, Google and Meta.</sub></td>
+</tr></table>
+
+![Ad copy](static/o15.JPG)
+<sub>Content, continued: more posts and the ad copy for Google, Meta and LinkedIn.</sub>
+
+<table><tr>
+<td width="50%"><img src="static/o17.JPG" alt="Knowledge graph"><br><sub>Knowledge graph (Zep): problems, segments, competitors and web intelligence, linked.</sub></td>
+<td width="50%"><img src="static/o18.JPG" alt="What the graph says"><br><sub>What the graph says: the causal chain and the leading indicators to watch.</sub></td>
+</tr></table>
+
 ### dbt + Airflow
 
 - **dbt (`tools/dbt_builder.py`)** — Claude designs sources, `stg_*` views and `fct_*`/`dim_*` marts with column docs and tests (`not_null`, `unique`, `accepted_values`, `relationships`). A SQL guard allows only single `SELECT`s with `source()` / `ref()` / `config()` Jinja; failing models get one repair attempt from dbt's own error output. The password reaches dbt only via `env_var()`.
 - **Airflow (`tools/airflow_builder.py`, `airflow/`)** — Docker Compose with `apache/airflow:3.2.1` + dbt, UI at <http://localhost:8085>. DAG `uaa_dbt_pipeline` runs daily: `dbt_build` → `quality_gate`. The backend ingests dbt's artifacts from the shared `dbt/uaa/target/` into the build history.
+
+<table><tr>
+<td width="50%"><img src="static/o19.JPG" alt="dbt lineage"><br><sub>Data models: dbt lineage from sources to staging to marts, 38/38 tests passed.</sub></td>
+<td width="50%"><img src="static/o20.JPG" alt="dbt tests and Airflow"><br><sub>dbt tests per model, build history and the Airflow schedule.</sub></td>
+</tr></table>
 
 ### Automatic dashboard
 
@@ -187,9 +238,19 @@ flowchart LR
 
 Julius-style chat with a file or a database. Every answer leads with the conclusion and shows the SQL or Python behind it.
 
+![Data chat on a database](static/o21.JPG)
+<sub>Data chat on a Supabase database: the tables (personal-data columns flagged PII), the steps the analyst ran, and the answer.</sub>
+
+<table><tr>
+<td width="50%"><img src="static/o22.JPG" alt="Chart and caveats"><br><sub>Answers end with caveats and a chart you can download as PNG or pin.</sub></td>
+<td width="50%"><img src="static/o23.JPG" alt="Driver analysis"><br><sub>Answer, then what the data shows, the insight and the recommended next step.</sub></td>
+</tr></table>
+
 - **Sources:** upload CSV · TSV · XLSX · XLS · Parquet · Feather · JSON · JSONL (up to 200 MB each), or connect any supported database.
 - **Data overview:** when a chat opens, every table is profiled in the sandbox (rows, missing values, date ranges, top values) and one Claude call writes a short summary, data-quality notes and six questions tailored to the columns (built once per chat, free).
 - **Follow-ups:** each answer ends with three suggested next questions, shown as buttons (parsed from a `FOLLOW_UPS:` line; no extra AI call).
+- **"Why did this change?":** ask *why did revenue drop in September?* and the agent calls `explain_change()` (`tools/insights.py`, preloaded in the sandbox). It splits the change in a total between two periods across every category column, ranks the segments that moved differently from the overall trend, drills one level into the biggest one and draws a waterfall: *"+30%: 98% of the rise is Garut, mostly working-capital loans"*. It handles months, quarters, years, date ranges and year-on-year; it skips IDs, free text, masked personal data and duplicate columns (store vs store_id), and flags incomplete periods and periods of different length. The numbers are computed in Python, not by the AI.
+- **Forecasts and what-if:** `forecast()` fits Holt-Winters (damped trend, plus seasonality when there are two full years), returns an 80% range from 1,000 simulated paths and a backtest error, and leaves out an unfinished first or last period. For *what if we raise prices 5%?* the agent turns the assumption into a % change (1.05 × 0.96 = +0.8%) and draws the scenario line next to the baseline, labelling its assumptions.
 - **Business glossary:** shared definitions (e.g. *big order = revenue above 500,000*) added to every question; definitions that look like prompt injection are rejected. `GET/PUT /api/datachat/glossary`.
 - **Exports:** the full result behind a table (up to 200k rows, kept in the chat's private folder) downloads as Excel or CSV; Plotly charts download as PNG (rendered from the saved figure spec with Kaleido).
 - **Pinboard:** pin any chart or table; **Refresh** replays the steps that produced it on the current data (no AI call). `GET /api/datachat/pins`, `POST …/sessions/{id}/pins`, `POST /api/datachat/pins/{id}/refresh`.
@@ -210,6 +271,14 @@ Julius-style chat with a file or a database. Every answer leads with the conclus
 ## Agent: autonomous tasks
 
 A Manus-style agent for business work: give it a goal, approve the plan, and it works on its own.
+
+![Agent answer](static/o24.JPG)
+<sub>An Agent task: a live price comparison of three milk-powder brands across Indonesian online stores.</sub>
+
+<table><tr>
+<td width="50%"><img src="static/o25.JPG" alt="Recommendations"><br><sub>Every answer ends with prioritised recommendations, expected impact, and risks and caveats.</sub></td>
+<td width="50%"><img src="static/o26.JPG" alt="Activity and deliverables"><br><sub>Sources, the 19-step activity log, the checklist and the deliverables (Excel, Markdown, PDF, PowerPoint).</sub></td>
+</tr></table>
 
 **Flow:** goal → Claude drafts a plan (free) → you edit steps and research items, and see the exact cost → **Approve & run** → live activity, checklist, researchers, files and sources → a structured answer plus deliverables. You can stop a task at any time (refunded).
 
@@ -243,6 +312,9 @@ Every finished task can be edited and presented in the [Studio](#studio-editable
 
 ## Workflow: automations on a canvas
 
+![Workflow canvas](static/o29.JPG)
+<sub>A workflow on the canvas: file → formula → group & summarise → chart, plus a forecast and AI insights; runs on the right.</sub>
+
 An n8n-style builder (React Flow) where every step is one of the desk's own abilities. Build by dragging steps and connecting them, or **describe the workflow and Claude builds it** — and later edits it ("also export to Excel", "run every Monday").
 
 | Group | Steps |
@@ -266,6 +338,11 @@ Example: *every morning → App data (Google Sheet) → Data quality check → C
 
 ## Studio: editable decks and documents
 
+<table><tr>
+<td width="50%"><img src="static/o27.JPG" alt="Deck editor"><br><sub>The deck editor: layouts, speaker notes, Ask AI for one slide or everything, brand, history, export to .pptx, present.</sub></td>
+<td width="50%"><img src="static/o28.JPG" alt="Document editor"><br><sub>The document editor: click any block to edit or ask the AI; export to Word or PDF.</sub></td>
+</tr></table>
+
 Every report the desk writes can be edited, presented and exported (`features/studio.py`, `frontend/components/studio/`).
 
 | Source | Where | Built from |
@@ -287,6 +364,9 @@ Every report the desk writes can be edited, presented and exported (`features/st
 ---
 
 ## Pricing & credits
+
+![Pricing](static/o30.JPG)
+<sub>Pricing: the credit balance by bucket, and the plans (monthly or annual, USD or IDR).</sub>
 
 Everything is paid for with **credits** (1 credit = $0.01 / Rp 159 at top-up price; plan credits cost less). Plans, packs and action costs live in ONE file, `pricing.json`, served by `/api/billing` so the backend and the UI never disagree.
 
@@ -321,6 +401,9 @@ Top-ups (never expire): Small 1,000 / $10 · Medium 5,000 / $45 · Large 20,000 
 ---
 
 ## Security model
+
+![Built to be trusted](static/o5.JPG)
+<sub>How the Home page explains the trust model, and the databases and apps it connects to.</sub>
 
 **Read-only by construction**
 - Data chat and the Agent reach data only through the read-only FastMCP server. Every SQL statement is parsed (sqlglot) and rejected unless it is a single `SELECT` — no writes, DDL, `SELECT INTO`, row locks, multiple statements, dangerous functions (`pg_sleep`, `dblink`, `pg_read_file`…) or credential/system tables (Supabase `auth`/`vault`, `pg_authid`…) — then runs in a `READ ONLY` transaction with a statement timeout.
@@ -433,15 +516,12 @@ Tokens are pasted per import (never stored) or set on the server as `SLACK_BOT_T
 ```bash
 python -m venv venv
 venv\Scripts\activate            # macOS/Linux: source venv/bin/activate
-pip install fastapi uvicorn python-dotenv crewai langgraph langchain langchain-core langchain-community
-pip install anthropic "langchain-anthropic<0.4" fastmcp sqlglot sqlalchemy pandas numpy scikit-learn statsmodels shap joblib
-pip install plotly kaleido==0.2.1 altair bokeh matplotlib seaborn reportlab python-pptx openpyxl pillow pyarrow
-pip install pdfplumber pypdf python-docx faiss-cpu sentence-transformers tavily-python zep-python exa-py playwright
-pip install "dbt-core==1.11.*" "dbt-postgres==1.10.*" psycopg2-binary
-pip install pymysql pymssql oracledb sqlalchemy-redshift duckdb-engine snowflake-sqlalchemy
-pip install --no-deps sqlalchemy-bigquery     # keeps existing Google/protobuf versions
+pip install -r requirements.txt
+pip install -r requirements-optional.txt      # optional: SQL Server, Oracle, Snowflake, BigQuery, Redshift, DuckDB drivers
 python -m playwright install chromium         # optional: the Agent falls back to installed Chrome/Edge
 ```
+
+Then copy `.env.example` to `.env` and fill in your keys.
 
 **2. Configure and start the API** — create `.env` (see below), then:
 
@@ -459,7 +539,16 @@ npm run dev                       # http://localhost:3010
 
 The frontend calls the backend at `http://localhost:8002` (override with `NEXT_PUBLIC_BACKEND_URL`). Restart the backend after pulling new code — it doesn't auto-reload.
 
-**First run:** the Home page's **Start here** panel tries every app on *Kopi Nusantara*, a fictional Indonesian coffee chain (`features/samples.py`; 2025 sales across 8 cities and 5 channels, customers, campaigns, generated on first use into `data/samples/`): it opens a sample Data chat, prefills an Analytics brief and an Agent task with the sample attached, and creates a ready-made workflow. No database or file is needed.
+**First run: industry kits.** The Home page's **Start here** panel lets you pick an industry and try every app on a fictional sample company (`features/kits.py`; data generated on first use into `data/samples/`, no database or file needed):
+
+| Kit | Company | Data | Patterns to find |
+|---|---|---|---|
+| Food & beverage | Kopi Nusantara | 2025 orders, customers, campaigns (8 cities, 5 channels) | Ramadan shifts sales to GoFood; 11.11 / 12.12 spikes; online share 35% → 58% |
+| Retail | Pasar Raya Mart | daily sales per store × category, 2024-2025 (10 stores) | Lebaran rush; payday weeks; QRIS adoption; a competitor hits Bekasi Timur; a new Malang store |
+| Banking | BPR Sejahtera Makmur | 6,500 loans with collectibility + monthly portfolio by branch × product, 2023-2025 | a Garut dry season more than doubles its NPL; consumer loans sour after Lebaran |
+| Marketing | Batik Lestari | daily results per campaign on 5 channels, 2025 | TikTok gets cheaper; Meta costs spike at Harbolnas; Google Search fatigue; Hari Batik burst |
+
+Each kit comes with **metric definitions** (NPL ratio, ROAS, like-for-like sales…) and **six questions** (including a *why* and a *forecast / what-if* question) that travel with its Data chat only, so your own glossary is untouched; an **Analytics brief**, an **Agent goal**, and a ready-made **Workflow** whose AI step reads a compact summary table. Questions answered on a kit chat use these definitions.
 
 **4. Airflow (optional, needs Docker Desktop)** — generate the setup from *Data models* (or `POST /api/airflow/setup`), then:
 
@@ -469,6 +558,11 @@ docker compose up -d --build      # UI http://localhost:8085 (user uaa, password
 ```
 
 ---
+
+The app also has its own **Docs** page (rail → Docs) with guides for every app:
+
+![Built-in docs](static/o31.JPG)
+<sub>Docs → Using Data chat, including the guide to why-did-it-change, forecasts and what-if.</sub>
 
 ## Environment variables
 
@@ -522,6 +616,8 @@ Interactive docs at **http://localhost:8002/docs**.
 | `POST` | `/api/datachat/sessions/{sid}/message` | Ask a question (charges 5 credits); the reply includes `followups` |
 | `GET` | `/api/datachat/sessions/{sid}/overview` | Data profile + summary, issues and suggested questions (`?refresh=true` rebuilds) |
 | `GET` · `PUT` | `/api/datachat/glossary` | Shared business definitions (`terms: [{term, definition}]`) |
+| `GET` | `/api/kits` | Industry kits: company, highlights, metric definitions, suggested questions |
+| `POST` | `/api/kits/{kit}/datachat` · `/analytics` · `/agent` · `/workflow` | Hand a kit (`fnb`, `retail`, `banking`, `marketing`) to an app; `/api/samples/*` is the `fnb` kit |
 | `GET` | `/api/datachat/sessions/{sid}/tables/{ref}?format=xlsx\|csv` | Full result table behind an answer |
 | `GET` | `/api/datachat/sessions/{sid}/charts/{name}.png` | A chart as PNG |
 | `GET` · `POST` | `/api/datachat/pins` · `/api/datachat/sessions/{sid}/pins` | Pinboard · pin a chart or table (`turn`, `kind`, `index`) |
@@ -603,6 +699,7 @@ Universal_AI_Analytics/
 │   ├── datachat_mcp.py       Read-only FastMCP server (describe_data · run_sql · run_python)
 │   ├── billing.py            Credit wallet: plans, buckets, top-ups, refunds, ledger
 │   ├── connectors.py         App connectors: Sheets, Drive, Slack, Notion, Airtable, file URL
+│   ├── kits.py               Industry kits: fictional sample data, metric definitions, questions, workflows
 │   ├── db_connect.py         Any-provider connection normaliser, test, shared pools
 │   ├── dashboard.py          Automatic dashboard design + LLM-free data
 │   ├── deeper.py             SHAP drivers, what-if, NL→SQL
@@ -610,6 +707,7 @@ Universal_AI_Analytics/
 ├── tools/
 │   ├── llm_guard.py          PII masking, injection screening, untrusted-data fencing, answer sanitising
 │   ├── py_kernel.py          Persistent sandboxed Python kernel (Data chat, Agent)
+│   ├── insights.py           explain_change() + forecast() helpers preloaded in the Data chat kernel
 │   ├── web_fetch.py          One-page headless browser fetch (Agent), run as a killable subprocess
 │   ├── chart_codegen.py · chart_runner.py · chart_style.py · chart_pack.py
 │   ├── dbt_builder.py · airflow_builder.py

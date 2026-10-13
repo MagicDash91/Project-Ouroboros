@@ -2662,37 +2662,74 @@ async def api_samples():
     return await asyncio.to_thread(samples.info)
 
 
+# ── Industry kits (features/kits.py) ──
+# Fictional sample companies per industry (F&B, retail, banking, marketing), each with metric definitions,
+# suggested questions, a ready-made workflow and report starters. /api/samples/* is the F&B kit.
+
+def _kit_call(fn, kit: str):
+    from features.kits import KitError
+    try:
+        return fn(kit)
+    except KitError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/kits")
+async def api_kits():
+    from features import kits
+    return kits.catalog()
+
+
+@app.post("/api/kits/{kit}/datachat")
+async def api_kit_datachat(kit: str):
+    """A Data chat on the kit's data, with its metric definitions and suggested questions (this chat only)."""
+    from features import kits
+    return await asyncio.to_thread(_kit_call, kits.start_datachat, kit)
+
+
+@app.post("/api/kits/{kit}/analytics")
+async def api_kit_analytics(kit: str):
+    """The kit's data registered like uploads, plus a suggested brief, for an Analytics run."""
+    from features import kits
+    files, brief = await asyncio.to_thread(_kit_call, kits.analytics_payload, kit)
+    infos = [await asyncio.to_thread(_ingest_file, n, b) for n, b in files]
+    return {"files": [{**i, "size": len(b)} for i, (_, b) in zip(infos, files)], "brief": brief}
+
+
+@app.post("/api/kits/{kit}/agent")
+async def api_kit_agent(kit: str):
+    """The kit's data as Agent attachments, plus a suggested goal."""
+    from features import kits
+    files, goal = await asyncio.to_thread(_kit_call, kits.agent_payload, kit)
+    infos = [await asyncio.to_thread(_ingest_file, n, b) for n, b in files]
+    return {"files": [{**i, "size": len(b), "source": "Sample data"} for i, (_, b) in zip(infos, files)], "goal": goal}
+
+
+@app.post("/api/kits/{kit}/workflow")
+async def api_kit_workflow(kit: str):
+    """A ready-made workflow on the kit's data."""
+    from features import kits
+    return await asyncio.to_thread(_kit_call, kits.start_workflow, kit)
+
+
 @app.post("/api/samples/datachat")
 async def api_samples_datachat():
-    """A Data chat session on the sample sales + campaigns."""
-    from features import samples
-    return await asyncio.to_thread(samples.start_datachat)
+    return await api_kit_datachat("fnb")
 
 
 @app.post("/api/samples/analytics")
 async def api_samples_analytics():
-    """The sample registered like uploads, plus a suggested brief, for an Analytics run."""
-    from features import samples
-    files = await asyncio.to_thread(samples.files)
-    infos = [await asyncio.to_thread(_ingest_file, n, b) for n, b in files]
-    return {"files": [{**i, "size": len(b)} for i, (_, b) in zip(infos, files)], "brief": samples.ANALYTICS_BRIEF}
+    return await api_kit_analytics("fnb")
 
 
 @app.post("/api/samples/agent")
 async def api_samples_agent():
-    """The sample sales + campaigns as Agent attachments, plus a suggested goal."""
-    from features import samples
-    files = [(n, b) for n, b in await asyncio.to_thread(samples.files) if n != "customers.csv"]
-    infos = [await asyncio.to_thread(_ingest_file, n, b) for n, b in files]
-    return {"files": [{**i, "size": len(b), "source": "Sample data"} for i, (_, b) in zip(infos, files)],
-            "goal": samples.AGENT_GOAL}
+    return await api_kit_agent("fnb")
 
 
 @app.post("/api/samples/workflow")
 async def api_samples_workflow():
-    """A ready-made workflow on the sample (check → month → revenue by channel → growth → chart, AI insights, Excel)."""
-    from features import samples
-    return await asyncio.to_thread(samples.start_workflow)
+    return await api_kit_workflow("fnb")
 
 
 class WorkflowSave(BaseModel):

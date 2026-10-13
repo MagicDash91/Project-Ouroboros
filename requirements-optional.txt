@@ -1,0 +1,11 @@
+# Optional database drivers for Data chat / Analytics connections. Install only the ones you use:
+#   pip install -r requirements-optional.txt
+# Without a driver, connecting to that database shows which package to install (features/db_connect.py).
+
+pymssql>=2.3                      # SQL Server
+oracledb>=2.0                     # Oracle
+sqlalchemy-redshift>=0.8          # Amazon Redshift (uses psycopg2)
+duckdb-engine>=0.13               # DuckDB
+snowflake-sqlalchemy>=1.6         # Snowflake
+sqlalchemy-bigquery>=1.11         # BigQuery
+yfinance>=0.2                     # market data for the banking crew (optional)
