@@ -90,7 +90,8 @@ def _compute_metrics(df: pd.DataFrame, metric_columns: list, target_column: str 
 
 def _pull(db_uri: str, table: str) -> pd.DataFrame:
     engine = create_engine(db_uri, connect_args={"connect_timeout": 10} if db_uri.startswith("postgre") else {})
-    return pd.read_sql(f"SELECT * FROM {table} LIMIT {_MAX_ROWS}", engine)
+    from tools.db_safety import safe_table
+    return pd.read_sql(f"SELECT * FROM {safe_table(engine, table)} LIMIT {int(_MAX_ROWS)}", engine)
 
 
 def _detect_drift(baseline: dict, current: dict, target_column: str = "") -> list:
@@ -164,9 +165,10 @@ def _narrate(monitor: dict, findings: list) -> str:
 
 
 def _post_webhook(url: str, payload: dict):
+    """Public https addresses only, no redirects (SSRF guard: tools/url_guard.py)."""
     try:
-        import httpx
-        httpx.post(url, json=payload, timeout=10)
+        from tools.url_guard import post_json
+        post_json(url, payload, timeout=10)
     except Exception:
         pass
 
@@ -183,6 +185,13 @@ def create_monitor(
     webhook_url: str = "",
 ) -> dict:
     """Create a monitor, capturing the current state as the baseline."""
+    webhook_url = (webhook_url or "").strip()
+    if webhook_url:
+        from tools.url_guard import UnsafeURLError, check_public_url
+        try:
+            check_public_url(webhook_url, https_only=True)
+        except UnsafeURLError as e:
+            raise ValueError(f"Webhook URL refused: {e}.")
     uri = _resolve_db_uri(db_uri)
     df  = _pull(uri, table)
     baseline = _compute_metrics(df, metric_columns or [], target_column)

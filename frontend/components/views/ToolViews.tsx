@@ -144,7 +144,7 @@ export function ModelLabView() {
             <ModelSelect models={models} value={predModel} onChange={setPredModel} />
           </Field>
           <Field label="File">
-            <input type="file" accept=".csv,.xlsx,.xls" onChange={(e) => setFile(e.target.files?.[0] || null)} className="field py-[5px] text-[12px] file:mr-3 file:border-0 file:bg-ink file:px-2 file:py-1 file:text-[11px] file:text-paper" />
+            <input type="file" accept=".csv,.xlsx,.xlsm,.xls" onChange={(e) => setFile(e.target.files?.[0] || null)} className="field py-[5px] text-[12px] file:mr-3 file:border-0 file:bg-ink file:px-2 file:py-1 file:text-[11px] file:text-paper" />
           </Field>
           <Button
             tone="ink"

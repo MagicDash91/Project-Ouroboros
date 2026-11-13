@@ -72,6 +72,14 @@ AUTO_DASHBOARD = os.getenv("AUTO_DASHBOARD", "true").strip().lower() in ("1", "t
 # Every call here is a bounded task, so thinking is off (also cheaper).
 CLAUDE_THINKING   = {"type": "disabled"}
 
+# Security checkpoint in front of EVERY Claude call (direct SDK, LangChain, CrewAI):
+# secret redaction in and out, size / rate / budget limits, audit log. See tools/llm_security.py.
+try:
+    from tools import llm_security as _llm_security
+    _llm_security.install()
+except Exception as _e:  # never take the app down, but make it visible
+    print(f"[security] LLM security layer NOT installed: {_e}", flush=True)
+
 try:
     from anthropic import Anthropic as _Anthropic
     anthropic_client = _Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=2, timeout=180) if ANTHROPIC_API_KEY else None

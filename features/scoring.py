@@ -115,6 +115,19 @@ def _transform(df: pd.DataFrame, artifact: dict) -> np.ndarray:
 
 def score_dataframe(df: pd.DataFrame, artifact: dict) -> pd.DataFrame:
     """Return the input rows with `prediction` (+ `probability` when available)."""
+    if artifact.get("kind") == "automl":                 # features/automl.py: a full sklearn Pipeline
+        from features.automl import prepare_features
+        model = artifact["model"]
+        X = prepare_features(df, artifact)
+        out = df.copy()
+        pred = model.predict(X)
+        classes = artifact.get("target_classes")
+        out["prediction"] = [classes[int(p)] for p in pred] if classes else np.round(pred.astype(float), 4)
+        if classes and hasattr(model, "predict_proba"):
+            proba = model.predict_proba(X)
+            out["probability"] = np.round(proba[:, 1] if proba.shape[1] == 2 else proba.max(axis=1), 4)
+        return out
+
     Xs = _transform(df, artifact)
     model = artifact["model"]
 
@@ -136,11 +149,16 @@ def score(model_ref: str, df: pd.DataFrame) -> dict:
     scored = score_dataframe(df, artifact)
 
     pred_col = scored["prediction"]
+    pos = artifact.get("positive_label")
+    if artifact.get("kind") == "automl":
+        positive_count = int((pred_col == pos).sum()) if pos is not None else None
+    else:
+        positive_count = int((pred_col == 1).sum()) if pred_col.dtype != object else None
     summary = {
         "model_type":     artifact.get("model_type", _model_type_from_name(model_ref)),
-        "positive_label": artifact.get("positive_label"),
+        "positive_label": pos,
         "rows_scored":    int(len(scored)),
-        "positive_count": int((pred_col == 1).sum()) if pred_col.dtype != object else None,
+        "positive_count": positive_count,
         "prediction_distribution": {str(k): int(v) for k, v in pred_col.value_counts().items()},
     }
     if "probability" in scored.columns:

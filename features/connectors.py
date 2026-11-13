@@ -38,7 +38,7 @@ MAX_ROWS = 200_000                   # per API-built table (Slack, Notion, Airta
 TIMEOUT = httpx.Timeout(30.0, connect=15.0)
 _UA = "Ouroboros-connector/1.0"
 
-TABULAR = {".csv", ".tsv", ".txt", ".xlsx", ".xls", ".json", ".jsonl", ".ndjson", ".parquet"}
+TABULAR = {".csv", ".tsv", ".txt", ".xlsx", ".xlsm", ".xls", ".json", ".jsonl", ".ndjson", ".parquet"}
 DOCUMENT = {".pdf", ".docx", ".doc", ".pptx", ".ppt"}
 
 
@@ -82,7 +82,7 @@ def _is_html(resp: httpx.Response, body: bytes) -> bool:
 def _tabular_to_csv(name: str, data: bytes) -> tuple:
     """CSV and Excel stay as they are; TSV, JSON and Parquet become CSV so every app can read them."""
     ext = Path(name).suffix.lower()
-    if ext in (".csv", ".xlsx", ".xls"):
+    if ext in (".csv", ".xlsx", ".xlsm", ".xls"):
         return name, data
     try:
         if ext in (".tsv", ".txt"):

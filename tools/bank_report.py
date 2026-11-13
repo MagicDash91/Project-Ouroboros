@@ -19,6 +19,33 @@ REPORTS_DIR = os.path.join(BASE_DIR, "outputs", "reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 
+def _chart_explanations(chart_list: list, report_content: str) -> list:
+    """[(path, title, {conclusion, action})] for every existing chart: one Claude call (tools/visual_explain),
+    using what the chart engine recorded about each chart and the report text; deterministic fallback."""
+    from tools.visual_explain import explain, session_chart_meta
+    key = (tuple(str(c) for c in chart_list), hash(report_content))
+    if key in _EXPLAIN_CACHE:                     # the PDF and the PPT of one report share one call
+        return _EXPLAIN_CACHE[key]
+    items, info = [], []
+    for k, cp in enumerate(chart_list):
+        if not isinstance(cp, str) or not os.path.exists(cp):
+            continue
+        meta = session_chart_meta(cp)
+        title = meta.get("title") or os.path.basename(cp).rsplit(".", 1)[0].replace("_", " ").replace("-", " ").title()
+        data = "\n".join(str(meta.get(f) or "") for f in ("gemini_analysis", "nvidia_recommendations")).strip()
+        items.append({"id": f"v{k}", "kind": "chart", "title": title, "data": data[:3000]})
+        info.append((cp, title, f"v{k}"))
+    notes = explain(items, report_content) if items else {}
+    result = [(cp, title, notes.get(vid, {"conclusion": "", "action": ""})) for cp, title, vid in info]
+    if len(_EXPLAIN_CACHE) > 20:
+        _EXPLAIN_CACHE.clear()
+    _EXPLAIN_CACHE[key] = result
+    return result
+
+
+_EXPLAIN_CACHE: dict = {}
+
+
 @tool("Generate PDF Report")
 def generate_pdf_report(
     report_content: str,
@@ -100,14 +127,25 @@ def generate_pdf_report(
                     pass
 
         if chart_list:
+            from xml.sax.saxutils import escape
+            from reportlab.platypus import KeepTogether, Table, TableStyle
+            s_label = ParagraphStyle("s_label", parent=s_body, alignment=0, spaceAfter=4, leading=13)
             story.append(PageBreak())
             story.append(Paragraph("Data Visualisations", s_h1))
             story.append(HRFlowable(width="100%", thickness=1, color=LIGHT_BLUE))
             story.append(Spacer(1, 0.2*inch))
-            for cp in chart_list:
-                if os.path.exists(cp):
-                    story.append(Image(cp, width=6.5*inch, height=4.0*inch))
-                    story.append(Spacer(1, 0.25*inch))
+            # Every chart carries its Conclusion and an Actionable insight.
+            for n, (cp, title, note) in enumerate(_chart_explanations(chart_list, report_content), 1):
+                box = Table([[Paragraph(f"<b>Conclusion:</b> {escape(note['conclusion'])}", s_label)],
+                             [Paragraph(f"<b>Actionable insight:</b> {escape(note['action'])}", s_label)]],
+                            colWidths=[6.5*inch])
+                box.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#EEF4FB")),
+                                         ("LINEBEFORE", (0, 0), (0, -1), 3, LIGHT_BLUE),
+                                         ("LEFTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 4),
+                                         ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
+                story.append(KeepTogether([Paragraph(f"{n}. {escape(title)}", s_h2),
+                                           Image(cp, width=6.5*inch, height=4.0*inch), Spacer(1, 0.08*inch), box]))
+                story.append(Spacer(1, 0.3*inch))
 
         doc.build(story)
 
@@ -195,12 +233,33 @@ def generate_ppt_report(
                 run.font.bold = ln.startswith("**")
                 run.font.color.rgb = C_DARK
 
-        def add_chart_slide(chart_path, label):
+        def add_chart_slide(chart_path, label, note=None):
+            """Chart on top, its Conclusion and Actionable insight in a panel underneath."""
             slide = prs.slides.add_slide(BLANK)
             _rect(slide, 0, 0, 13.33, 1.05, C_PRIMARY)
             _textbox(slide, 0.3, 0.12, 12.73, 0.82, label, 20, bold=True)
             if os.path.exists(chart_path):
-                slide.shapes.add_picture(chart_path, Inches(0.5), Inches(1.1), Inches(12.33), Inches(6.0))
+                from PIL import Image as _PIL
+                with _PIL.open(chart_path) as im:
+                    iw, ih = im.size
+                box_w, box_h = 12.33, 4.45
+                scale = min(box_w / iw, box_h / ih)
+                pw, ph = iw * scale, ih * scale
+                slide.shapes.add_picture(chart_path, Inches(0.5 + (box_w - pw) / 2), Inches(1.2), Inches(pw), Inches(ph))
+            if note:
+                _rect(slide, 0.5, 5.8, 12.33, 1.45, RGBColor(0xEE, 0xF4, 0xFB))
+                _rect(slide, 0.5, 5.8, 0.06, 1.45, C_ACCENT)
+                tb = slide.shapes.add_textbox(Inches(0.75), Inches(5.85), Inches(11.9), Inches(1.35))
+                tf = tb.text_frame
+                tf.word_wrap = True
+                for i, (lab, text) in enumerate((("Conclusion: ", note["conclusion"]),
+                                                 ("Actionable insight: ", note["action"]))):
+                    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                    p.space_after = Pt(4)
+                    for t, bold in ((lab, True), (text, False)):
+                        r = p.add_run()
+                        r.text = t
+                        r.font.size, r.font.bold, r.font.color.rgb = Pt(13), bold, C_DARK
 
         add_cover(report_title, f"Banking Analytics Report  •  {datetime.now().strftime('%B %Y')}")
 
@@ -224,9 +283,8 @@ def generate_ppt_report(
                 except Exception:
                     pass
 
-        for i, cp in enumerate(chart_list[:6]):
-            label = os.path.basename(cp).replace(".png", "").replace("_", " ").title()
-            add_chart_slide(cp, f"Visualisation {i + 1}: {label}")
+        for i, (cp, title, note) in enumerate(_chart_explanations(chart_list[:12], report_content)):
+            add_chart_slide(cp, f"Visualisation {i + 1}: {title}", note)
 
         add_cover("Thank You", "Questions & Discussion")
 

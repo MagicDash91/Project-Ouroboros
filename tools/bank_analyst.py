@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from crewai.tools import tool
 from features.db_connect import cached_engine as create_engine   # one shared pool per database
+from tools.db_safety import safe_table, safe_columns, write_table, write_note, read_only_query
 
 from config import POSTGRES_URI, query_ollama as query_nvidia
 
@@ -232,7 +233,7 @@ def generate_visualization(
 
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 10000", engine)
+        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
 
         fig, ax = plt.subplots(figsize=(12, 7))
         auto_title = title or f"{chart_type.title()}: {y_column or x_column} by {x_column}"
@@ -333,7 +334,7 @@ def generate_dashboard(table_name: str) -> str:
     """
     try:
         engine = create_engine(_get_db_uri())
-        df   = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 10000", engine)
+        df   = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
         nums = df.select_dtypes(include=np.number).columns.tolist()
 
         if len(nums) < 2:
@@ -506,9 +507,9 @@ def label_encode_table(table_name: str) -> str:
     from sklearn.preprocessing import LabelEncoder
 
     try:
-        dest   = f"{table_name}_encoded"
+        dest   = f"{table_name.split('.')[-1].strip(chr(34))}_encoded"
         engine = create_engine(_get_db_uri())
-        df     = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 10000", engine)
+        df     = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
 
         # Dates are not categories: turn date/datetime columns into "days since the first date"
         # so correlations stay meaningful, instead of label-encoding them.
@@ -536,7 +537,7 @@ def label_encode_table(table_name: str) -> str:
             if df[col].dtype == object:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        df.to_sql(dest, engine, if_exists="replace", index=False)
+        dest = write_table(df, dest, engine)
 
         return json.dumps({"status": "success", "source_table": table_name, "output_table": dest,
                            "encoded_columns": encoded_cols, "row_count": len(df)}, indent=2)

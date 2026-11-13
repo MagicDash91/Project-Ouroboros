@@ -89,6 +89,7 @@ class Task:
         self.r = r
         self.cancel = threading.Event()
         self.lock = threading.RLock()
+        self.seen: list = []                 # texts the agent read this run (make_table checks numbers against them)
 
     @property
     def id(self) -> str:
@@ -264,6 +265,73 @@ _PLAN_TOOL = {
 }
 
 
+TABLE_EXTS = (".csv", ".tsv", ".xlsx", ".xlsm", ".xls", ".parquet", ".feather", ".jsonl", ".ndjson")
+MAX_INPUTS = 10
+MAX_INPUT_MB = 30
+
+
+def _save_inputs(t: "Task", attachments: list) -> list:
+    """Fast part, run inside the request: validate the user's files and write them under inputs/.
+
+    Returns [(name, safe, ext)] for _understand_inputs, which does the slow reading in the planning thread.
+    """
+    from tools import documents
+    if len(attachments) > MAX_INPUTS:
+        raise AgentError(f"Attach at most {MAX_INPUTS} files.")
+    saved, used = [], set()
+    for name, data in attachments:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name).name)[:120] or "file"
+        ext = Path(safe).suffix.lower()
+        while safe.lower() in used:                                   # two files with the same name
+            safe = f"{Path(safe).stem}_{len(used)}{ext}"
+        used.add(safe.lower())
+        if len(data) > MAX_INPUT_MB * 1024 * 1024:
+            raise AgentError(f"{name} is larger than {MAX_INPUT_MB} MB.")
+        if ext not in TABLE_EXTS and ext not in documents.DOCUMENT_EXTS and ext not in documents.OLD_OFFICE:
+            raise AgentError(f"{name}: {ext or 'files without an extension'} can't be read. Attach PDF, Word, PowerPoint, "
+                             "Excel, CSV, Parquet, JSON, text, Markdown or HTML files.")
+        (t.files / "inputs").mkdir(parents=True, exist_ok=True)
+        (t.files / "inputs" / safe).write_bytes(data)
+        saved.append((name, safe, ext))
+    return saved
+
+
+def _understand_one(t: "Task", name: str, safe: str, ext: str) -> dict:
+    """Tables (CSV, Excel, Parquet …) stay as files for load_into_python; Excel gets its workbook guide
+    (one Claude call, cached per file content). Documents (PDF, Word, PowerPoint, text, HTML, JSON …) keep
+    the original and get <name>.txt with the extracted text for read_file, plus an overview."""
+    from tools import documents, excel_reader
+    dst = t.files / "inputs" / safe
+    if ext in TABLE_EXTS:
+        item = {"path": f"inputs/{safe}", "kind": "table", "name": name}
+        if excel_reader.is_excel(safe):                               # every sheet understood before planning
+            try:
+                item["guide"] = excel_reader.understand(dst.read_bytes(), safe)["guide"]
+            except Exception:
+                pass
+        return item
+    try:
+        doc = documents.extract(dst)
+    except documents.DocumentError as e:
+        raise AgentError(f"{name}: {e}")
+    txt = dst.with_name(dst.name + ".txt") if ext != ".txt" else dst
+    if txt != dst:
+        txt.write_text(doc["text"], encoding="utf-8")
+    return {"path": f"inputs/{txt.name}", "kind": "document", "name": name, "original": f"inputs/{safe}",
+            "doc_kind": doc["kind"], "guide": documents.overview(name, doc)}
+
+
+def _understand_inputs(t: "Task", saved: list) -> list:
+    """Slow part, run in the planning thread: read every saved file IN PARALLEL (each Excel workbook is a
+    5-7 s Claude call; one after another they used to hold up planning ~10 s per file). Keeps upload order."""
+    if not saved:
+        return []
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(4, len(saved))) as pool:
+        futures = [pool.submit(_understand_one, t, *s) for s in saved]
+        return [f.result() for f in futures]
+
+
 def create_task(goal: str, db_uri: str = "", db_schema: str = "", attachments: Optional[list] = None) -> dict:
     """attachments: [(filename, bytes)] put in the workspace under inputs/ (tables as files, documents as .txt)."""
     goal = (goal or "").strip()[:4000]
@@ -287,29 +355,39 @@ def create_task(goal: str, db_uri: str = "", db_schema: str = "", attachments: O
               "subagents": [], "deliverables": [], "sources": [], "answer": "", "error": "", "charge_ids": [],
               "inputs": []})
     t.files.mkdir(parents=True, exist_ok=True)
-    for name, data in (attachments or [])[:10]:
-        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name).name)[:120] or "data.csv"
-        (t.files / "inputs").mkdir(exist_ok=True)
-        (t.files / "inputs" / safe).write_bytes(data)
-        kind = "table" if Path(safe).suffix.lower() in (".csv", ".xlsx", ".xls", ".json", ".parquet") else "document"
-        t.r["inputs"].append({"path": f"inputs/{safe}", "kind": kind})
+    try:
+        saved = _save_inputs(t, attachments or [])
+    except AgentError:
+        shutil.rmtree(t.dir, ignore_errors=True)
+        raise
+    if saved:
+        t.r["stage"] = f"Reading your {len(saved)} file{'s' if len(saved) > 1 else ''}…"
     with _lock:
         _tasks[tid] = t
     t.save()
-    threading.Thread(target=_plan, args=(t,), daemon=True).start()
+    threading.Thread(target=_plan, args=(t, saved), daemon=True).start()
     return t.public()
 
 
-def _plan(t: Task):
+def _plan(t: Task, saved: Optional[list] = None):
     try:
-        db_note = (f"The user connected a database ({t.r['db']['label']}); the agent can query it read-only."
+        if saved:
+            t.r["inputs"] = _understand_inputs(t, saved)
+            if t.cancel.is_set():
+                return
+        t.r["stage"] = "Drafting a plan…"
+        t.save()
+        db_note =(f"The user connected a database ({t.r['db']['label']}); the agent can query it read-only."
                    if t.r["db"] else "No database is connected.") + _inputs_note(t)
         resp = _claude(
             system=("You plan tasks for an autonomous business agent that can search the web, browse pages, run "
                     "Python, query a read-only database (if connected) and produce reports (PDF + slide deck) and "
                     "spreadsheets. Make a short, concrete plan. Use wide_research only when the same research "
                     "repeats for 3 or more separate items. Never plan to send, post, buy or delete anything. "
-                    "Write the plan in the user's language."),
+                    "Whenever the task involves data, numbers or comparisons (attached tables, a database, prices, "
+                    "market figures, survey results …), include a step that charts the key findings (2-5 charts, "
+                    "each proving one finding), even if the user didn't ask for charts: the answer, the report and "
+                    "the slide deck show them. Write the plan in the user's language."),
             messages=[{"role": "user", "content": f"Task: {t.r['goal']}\n\n{db_note}\nToday is {datetime.now():%Y-%m-%d}."}],
             tools=[_PLAN_TOOL], tool_choice={"type": "tool", "name": "submit_plan"})
         _usage(t, resp)
@@ -320,8 +398,11 @@ def _plan(t: Task):
         if t.cancel.is_set():
             return
         t.r.update(plan=plan, title=(plan.get("title") or t.r["title"])[:80], status="review")
+    except AgentError as e:                                                      # a file that can't be read
+        t.r.update(status="failed", error=str(e)[:300])
     except Exception as e:                                                       # noqa: BLE001
         t.r.update(status="failed", error=f"Planning failed: {str(e)[:300]}")
+    t.r.pop("stage", None)
     t.save()
 
 
@@ -392,14 +473,29 @@ T_WRITE = _tool("write_file", "Write a workspace file (.md, .txt, .csv or .json)
 T_LIST = _tool("list_files", "List the workspace files.", {})
 T_LOAD = _tool("load_into_python", "Load a workspace CSV/XLSX/JSON file into Python as a pandas DataFrame.",
                {"path": _S, "name": {"type": "string", "description": "DataFrame variable name"}}, ["path", "name"])
-T_PY = _tool("run_python", "Run Python (pandas, numpy, plotly…) in a persistent sandbox. No file, network or OS "
-                           "access: it can't save files (no to_csv/open) - to keep a table, end the cell with "
-                           "`df.to_string()` or print it, then save it with write_file. DataFrames from "
-                           "load_into_python / run_sql are preloaded. Assign charts to `fig`.",
-             {"code": _S}, ["code"])
+_PURPOSE = {"type": "string", "description": "What this computes, in a few words (shown to the user as the label "
+                                              "of this evidence)"}
+T_PY = _tool("run_python", "Run Python (pandas, numpy, scipy, statsmodels, sklearn, plotly…) in a persistent sandbox. "
+                           "No file, network or OS access: it can't save files (no to_csv/open) - to keep a table, end "
+                           "the cell with `df.to_string()` or print it, then save it with write_file. DataFrames from "
+                           "load_into_python / run_sql are preloaded. Assign ONE plotly chart to `fig` per cell; it gets "
+                           "a chart id (C1, C2, …) you show in finish. Every successful result is evidence E<n>.",
+             {"code": _S, "purpose": _PURPOSE}, ["code", "purpose"])
+T_TABLE = _tool("make_table", "Put figures you READ on web pages, in search results or in documents into a small "
+                               "table, so they can be charted: it becomes a pandas DataFrame in run_python and evidence "
+                               "E<n>. Every number must appear in a page, result or file you saw (it is checked); "
+                               "compute derived numbers (growth, shares) afterwards in run_python.",
+                {"title": _S, "columns": {"type": "array", "items": _S, "description": "Column names; the first is "
+                                          "the label (e.g. year, company, category)"},
+                 "rows": {"type": "array", "items": {"type": "array", "items": {"type": ["string", "number", "null"]}},
+                          "description": "One list of values per row, in column order (numbers as numbers)"},
+                 "source": {"type": "string", "description": "Where the figures come from (page title / URL / file)"},
+                 "name": {"type": "string", "description": "DataFrame variable name (snake_case)"}},
+                ["title", "columns", "rows", "source", "name"])
 T_DESCRIBE = _tool("describe_database", "List the connected database's tables and columns.", {})
-T_SQL = _tool("run_sql", "Run ONE read-only SELECT on the connected database; the result becomes a DataFrame in Python.",
-              {"query": _S, "save_as": _S}, ["query"])
+T_SQL = _tool("run_sql", "Run ONE read-only SELECT on the connected database; the result becomes a DataFrame in Python "
+                         "and evidence E<n>.",
+              {"query": _S, "save_as": _S, "purpose": _PURPOSE}, ["query"])
 T_WIDE = _tool("wide_research",
                f"Research up to {MAX_SUBAGENTS} separate items IN PARALLEL. Each item gets its own researcher agent "
                "(web search + browser) that follows `instruction` for that item and returns findings with sources. "
@@ -413,7 +509,13 @@ T_DELIVER = _tool("create_deliverable",
                   {"kind": {"type": "string", "enum": ["report", "spreadsheet"]}, "title": _S,
                    "markdown": {"type": "string", "description": "For kind=report: the full report in markdown, "
                                 "following REPORT STRUCTURE"},
-                   "csv_path": {"type": "string", "description": "For kind=spreadsheet: workspace CSV path"}},
+                   "csv_path": {"type": "string", "description": "For kind=spreadsheet: workspace CSV path"},
+                   "charts": {"type": "array", "items": {"type": "object", "properties": {
+                       "id": {"type": "string", "description": "Chart id (C1…)"},
+                       "title": {"type": "string", "description": "The finding the chart proves"}},
+                       "required": ["id", "title"]},
+                       "description": "For kind=report: the charts to include (each gets a Conclusion and an "
+                                      "Actionable insight panel)"}},
                   ["kind", "title"])
 _REC = {"type": "object", "properties": {
     "action": {"type": "string", "description": "A specific action, starting with a verb"},
@@ -422,11 +524,30 @@ _REC = {"type": "object", "properties": {
     "timeframe": {"type": "string", "description": "e.g. 'this week', 'within 30 days', 'Q1 2027'"},
     "impact": {"type": "string", "description": "Expected result, quantified when the data allows"}},
     "required": ["action", "why", "priority"]}
-T_FINISH = _tool("finish", "Give the final answer and end the task. Every field is shown to the user as its own section.",
-                 {"answer": {"type": "string", "description": "The direct answer to the user's goal in 2-4 sentences, "
+T_FINISH = _tool("finish", "Give the final answer and end the task. Every field is shown to the user as its own section, "
+                           "written for a business reader. Never mention tools, SQL, Python, code or files in prose.",
+                 {"answer": {"type": "string", "description": "The direct answer to the user's goal in 3-6 sentences, "
                              "with the key numbers"},
-                  "key_findings": {"type": "array", "items": _S,
-                                   "description": "3-7 findings, each one sentence with its number and what it shows"},
+                  "key_findings": {"type": "array", "items": {"type": "object", "properties": {
+                      "text": {"type": "string", "description": "1-2 sentences with its number, its base and what it shows"},
+                      "evidence": {"type": "array", "items": _S, "description": "Evidence ids (E3) this finding comes "
+                                   "from; every number in it must be in them. Empty only for facts from web pages "
+                                   "listed in sources"}},
+                      "required": ["text", "evidence"]}, "description": "4-8 findings, each with its evidence"},
+                  "visuals": {"type": "array", "items": {"type": "object", "properties": {
+                      "chart": {"type": "string", "description": "Chart id (C1, C2, …)"},
+                      "title": {"type": "string", "description": "The finding the chart proves, as a sentence (e.g. "
+                                "'Month-to-month customers churn 15x more than two-year customers')"},
+                      "conclusion": {"type": "string", "description": "What the chart shows, with its key numbers "
+                                     "(1-3 sentences)"},
+                      "action": {"type": "string", "description": "The actionable insight: what to do because of it "
+                                 "(1-2 sentences, specific)"}},
+                      "required": ["chart", "title", "conclusion", "action"]},
+                      "description": "The 2-5 charts that carry the key evidence, in reading order"},
+                  "analysis": {"type": "string", "description": "The in-depth explanation in markdown (### subheadings, "
+                               "compact tables allowed): overall picture, breakdowns, drivers, statistical results, "
+                               "comparisons, size of the opportunity or risk. Cite evidence inline like [E3] after the "
+                               "sentence it supports"},
                   "conclusion": {"type": "string", "description": "What the findings mean together for the user's "
                                  "business or decision: the 'so what' (one paragraph, no new facts)"},
                   "recommendations": {"type": "array", "items": _REC, "description": "3-6 concrete, prioritised "
@@ -439,7 +560,7 @@ T_FINISH = _tool("finish", "Give the final answer and end the task. Every field 
                               "description": "Pages you actually opened or found"},
                   "language": {"type": "string", "enum": ["en", "id", "other"],
                                "description": "Language you wrote in (sets the section headings)"}},
-                 ["answer", "key_findings", "conclusion", "recommendations"])
+                 ["answer", "key_findings", "analysis", "conclusion", "recommendations"])
 T_FINISH_ITEM = _tool("finish_item", "Return your findings for this item and stop.",
                       {"findings": {"type": "string", "description": "Concise markdown findings with numbers"},
                        "sources": {"type": "array", "items": _S}}, ["findings"])
@@ -450,8 +571,21 @@ def _inputs_note(t: Task) -> str:
     inputs = t.r.get("inputs") or []
     if not inputs:
         return ""
-    lines = [f"{i['path']} ({'table: load_into_python' if i['kind'] == 'table' else 'document: read_file'})" for i in inputs]
-    return " The user attached these workspace files; use them as the primary data: " + "; ".join(lines) + "."
+    lines = [f"{i['path']} ({'table: load_into_python' if i['kind'] == 'table' else 'document text: read_file'})"
+             for i in inputs]
+    note = (" The user attached these workspace files; use them as the primary source and read them fully "
+            "(read_file pages through long text with offset): " + "; ".join(lines) + ".")
+    from tools.llm_security import fence
+    workbooks = [i["guide"] for i in inputs if i.get("guide") and i["kind"] == "table"]
+    docs = [i["guide"] for i in inputs if i.get("guide") and i["kind"] == "document"]
+    if workbooks:
+        note += (" Excel workbooks load as one DataFrame per sheet; follow this guide to every sheet (joins, "
+                 "caveats) so the analysis is right:\n" + fence("\n\n".join(workbooks)[:10000], "workbook_guide"))
+    if docs:
+        note += ("\nOverview of each attached document (pages / slides / headings; the text file marks [Page n] and "
+                 "[Slide n] so you can cite them; figures in tables can go to make_table):\n"
+                 + fence("\n\n".join(docs)[:8000], "document_overview"))
+    return note
 
 
 def _system(t: Task) -> str:
@@ -459,6 +593,8 @@ def _system(t: Task) -> str:
           "Personal-data columns come back pseudonymised: never try to reveal real values.") if t.r["db"] else \
         "No database is connected."
     db += _inputs_note(t)
+    from features.metrics import prompt_text
+    db += prompt_text()
     return f"""You are the Agent of Universal Analytics: an autonomous analyst that completes business tasks end to end.
 
 How you work:
@@ -467,14 +603,53 @@ How you work:
 - When the same research repeats for 3+ separate items, use wide_research once instead of doing them one by one.
 - Save important findings and tables with write_file (CSV for tables) so nothing is lost.
 - Use run_python for calculations and charts; never invent numbers. If a source has no number, say so.
+- Visualize every answer that has numbers (2-5 charts): visuals make the analysis easier to read. For data you
+  computed, chart it in run_python. For figures you READ on web pages, in search results or documents (market
+  size by year, prices by store, shares by company…), put them in make_table with the source, then chart that
+  DataFrame in run_python (one chart per cell, assigned to `fig`). A web research answer gets charts too.
 - {db}
+
+How a senior analyst works on data (files or database):
+1. Understand: decide exactly what must be answered and how it is measured (e.g. "churn rate = churned / all customers").
+2. Explore before concluding: row counts, missing values, duplicates, types (numbers or dates stored as text), date
+   coverage, category levels, outliers, how tables relate. Fix problems in Python and say what you changed in
+   risks_caveats. Compute every number over ALL rows; never estimate or sample.
+3. Hypotheses: in a short note before your next tool call, list the 3-6 most likely explanations or angles, then test
+   each with data; drop what the data rejects, dig into what it supports.
+4. Go deep step by step: overall number -> breakdown by each important dimension -> cross-breakdowns (two dimensions)
+   -> drivers (tests or a model) -> size and impact (how many customers / how much money).
+5. Verify the key numbers a second way when cheap (shares add up to 100%, segments add up to the total).
+6. Show it: 2-5 charts that carry the key evidence (see Charts), then finish with every field filled.
+Methods: why / drivers -> rate by each factor with group sizes, chi-square or Mann-Whitney / t-test, then a
+logistic (yes/no outcome) or OLS model (statsmodels) for overlapping effects. Segments -> cross-tabs, size each
+segment (count, share, rate, value at stake) and rank by impact. Trends -> by period, MoM / YoY growth, seasonality;
+forecasts with ExponentialSmoothing / ARIMA back-tested (MAPE) and given as a range. A vs B -> difference with a
+confidence interval and a test.
+Coding: one logical step per cell; build on variables you made; print only what you need (round to 3 decimals, at
+most ~30 rows); identifier columns (ids, codes, phone numbers) are only for counting distinct values; pass `purpose`.
+Charts (plotly, assigned to `fig`, one per cell, built from a small aggregated DataFrame):
+- Compare categories -> bar; horizontal bar sorted largest first for > 6 categories or long labels; keep natural
+  order for ordered groups (age bands, sizes); at most ~15 bars.
+- Change over time -> line (period in time order, at most ~5 series). Parts of a whole -> pie only for 2-6 parts,
+  otherwise a bar of shares. Composition across groups -> stacked bar (100% when group sizes differ). Two dimensions
+  -> heatmap. Two numeric measures -> scatter (give the correlation). Distribution -> histogram / box.
+- The chart title states the finding, not the variables; label axes with units; one unit per chart.
+Precision: give the base with every rate ("42.7% of 3,875 month-to-month customers"), units and periods, percentages
+with 1 decimal; say "associated with", not "causes", unless it is an experiment.
+Evidence: every successful run_python / run_sql result is labelled [evidence E<n>]. In finish, each key finding
+lists its evidence and every number in it must appear in that evidence; cite [E3] inline in the analysis. Numbers
+that appear in no result are sent back to you to fix.
 - If a tool fails, read the error and try a different approach; don't repeat the same failing call.
-- When the user asked for a report, deck or spreadsheet, call create_deliverable before finishing.
+- When the user asked for a report, deck or spreadsheet, call create_deliverable before finishing; for a report pass
+  the charts (ids + finding titles) that carry the evidence.
 - REPORT STRUCTURE for create_deliverable(kind=report): ## Executive summary (the answer in 3-5 sentences) →
   ## Key findings (each with its number and source) → analysis sections / tables → ## Conclusion (what it means for
   the user's decision) → ## Recommendations (a markdown table: Priority | Action | Why | Timing | Expected impact,
   3-6 rows, each tied to a finding) → ## Risks and caveats → ## Sources.
-- Finish with `finish`: fill every field. The conclusion interprets the findings (the "so what"); recommendations are
+- A chart in the report is described the same way as in finish: the finding as its heading, then **Conclusion:**
+  (what it shows, with numbers) and **Actionable insight:** (what to do).
+- Finish with `finish`: fill every field. For every chart you show in `visuals` give its finding title, conclusion and
+  actionable insight. The analysis explains the evidence in depth; the conclusion interprets the findings (the "so what"); recommendations are
   specific, prioritised actions with timing and expected impact, each justified by a finding. Keep them consistent
   with the report if you wrote one.
 
@@ -496,22 +671,12 @@ def _wrap(text: str, t: Task) -> str:
 # Web ---------------------------------------------------------------------------
 
 def _public_host(url: str) -> str:
-    """Raise unless the URL is http(s) on a public host (SSRF guard)."""
-    u = urlparse(url)
-    if u.scheme not in ("http", "https") or not u.hostname:
-        raise AgentError("only public http(s) URLs can be opened")
-    host = u.hostname.lower()
-    if host == "localhost" or host.endswith((".local", ".internal", ".localhost")):
-        raise AgentError("local and internal addresses are blocked")
+    """Raise unless the URL is http(s) on a public host (SSRF guard, shared: tools/url_guard.py)."""
+    from tools.url_guard import UnsafeURLError, check_public_url
     try:
-        infos = socket.getaddrinfo(host, u.port or (443 if u.scheme == "https" else 80))
-    except socket.gaierror:
-        raise AgentError(f"can't resolve {host}")
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
-            raise AgentError("private, loopback and internal network addresses are blocked")
-    return host
+        return check_public_url(url)
+    except UnsafeURLError as e:
+        raise AgentError(str(e))
 
 
 BROWSE_TIMEOUT = 45            # seconds per page, hard limit
@@ -586,7 +751,7 @@ def _slug(s: str, n: int = 40) -> str:
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def _tools_for(t: Task) -> list:
-    tools = [T_TODO, T_SEARCH, T_BROWSE, T_READ, T_WRITE, T_LIST, T_LOAD, T_PY]
+    tools = [T_TODO, T_SEARCH, T_BROWSE, T_READ, T_WRITE, T_LIST, T_LOAD, T_TABLE, T_PY]
     if t.r["db"]:
         tools += [T_DESCRIBE, T_SQL]
     tools += [T_WIDE, T_DELIVER, T_FINISH]
@@ -691,9 +856,18 @@ def _exec_tool(t: Task, name: str, args: dict, browser: _Browser, ev: dict) -> s
             res = data_chat.add_file(_datachat(t), p, args.get("name", ""))
         except data_chat.DataChatError as e:
             raise AgentError(str(e))
-        d = res["datasets"][0] if res["datasets"] else {}
-        return f"Loaded as `{d.get('name')}`: {d.get('rows')} rows; columns: " + \
-            ", ".join(f"{c} ({ty})" for c, ty in d.get("columns", [])[:40])
+        if len(res["datasets"]) > 1:                     # an Excel workbook: one DataFrame per sheet
+            out = "Loaded one DataFrame per sheet:\n" + "\n".join(
+                f"- `{d.get('name')}`: {d.get('rows')} rows; columns: " + ", ".join(c for c, _ in d.get("columns", [])[:25])
+                for d in res["datasets"])
+        else:
+            d = res["datasets"][0] if res["datasets"] else {}
+            out = f"Loaded as `{d.get('name')}`: {d.get('rows')} rows; columns: " + \
+                ", ".join(f"{c} ({ty})" for c, ty in d.get("columns", [])[:40])
+        return out + (f"\n\n{res['guide']}" if res.get("guide") else "")
+
+    if name == "make_table":
+        return _make_table(t, args, ev)
 
     if name in ("run_python", "run_sql", "describe_database"):
         sid = _datachat(t)
@@ -702,9 +876,22 @@ def _exec_tool(t: Task, name: str, args: dict, browser: _Browser, ev: dict) -> s
             {"query": args.get("query", ""), "save_as": args.get("save_as") or "q"} if name == "run_sql" else {}
         res = data_chat._mcp_call(mcp_name, {**payload, "session_id": sid})
         step = res.get("step") or {}
-        t.update_event(ev, charts=res.get("charts", []), tables=res.get("tables", [])[:1],
+        text = res.get("text", "")[:RESULT_CAP]
+        charts = res.get("charts", [])
+        notes = []
+        if name != "describe_database" and step.get("ok") and not text.startswith("ERROR"):
+            eid = _add_evidence(t, name, args.get("purpose") or _short_input(name, args)[:80],
+                                payload.get("code") or payload.get("query", ""), text)
+            notes.append(f"[evidence {eid}]")
+            for c in charts:
+                c["id"] = _add_chart(t, c, eid, args.get("purpose", ""))
+            if charts:
+                notes.append("[chart " + ", ".join(c["id"] for c in charts) + " created - show it in finish.visuals "
+                             "with its finding, conclusion and actionable insight]")
+            t.update_event(ev, evidence=eid)
+        t.update_event(ev, charts=charts, tables=res.get("tables", [])[:1],
                        **({"ok": step["ok"]} if "ok" in step else {}))
-        return res.get("text", "")[:RESULT_CAP]
+        return (" ".join(notes) + "\n" + text) if notes else text
 
     if name == "wide_research":
         return _wide_research(t, args, ev)
@@ -789,7 +976,13 @@ def _main_loop(t: Task):
             for call in calls:
                 args = call.input or {}
                 if call.name == "finish":
-                    _complete(t, _compose_answer(args))
+                    problem = _check_finish(t, args)
+                    if problem:
+                        t.event("note", text="Checking the answer: some numbers or charts needed fixing.")
+                        results.append({"type": "tool_result", "tool_use_id": call.id, "content": problem,
+                                        "is_error": True})
+                        continue
+                    _complete(t, _compose_answer(args, t))
                     return
                 ev = t.event("tool", tool=call.name, input=_short_input(call.name, args)[:2000], ok=None)
                 started = time.time()
@@ -801,6 +994,8 @@ def _main_loop(t: Task):
                 except Exception as e:                                       # noqa: BLE001
                     msg = str(e).splitlines()[0][:400] if str(e) else ""
                     out, ok = f"ERROR: {type(e).__name__}: {msg}", False
+                if ok and call.name not in ("update_todo", "write_file", "make_table", "create_deliverable"):
+                    t.seen.append(out)
                 t.update_event(ev, ok=ok, seconds=round(time.time() - started, 1),
                                output=re.sub(r"</?data_output>", "", out)[:1500])
                 stubs[call.id] = (f"[older result compacted: {call.name} {_short_input(call.name, args)[:120]} - "
@@ -833,6 +1028,8 @@ def _short_input(name: str, args: dict) -> str:
         return f"{args.get('instruction', '')} · {len(args.get('items', []))} items"
     if name == "create_deliverable":
         return f"{args.get('kind', '')}: {args.get('title', '')}"
+    if name == "make_table":
+        return f"{args.get('title', '')} · {len(args.get('rows') or [])} rows · {args.get('source', '')}"
     if name == "update_todo":
         return f"{sum(1 for i in args.get('items', []) if i.get('done'))}/{len(args.get('items', []))} done"
     return ""
@@ -849,17 +1046,218 @@ _HEADINGS = {
 }
 
 
-def _compose_answer(a: dict) -> str:
-    """The finish tool's fields as one markdown answer with fixed sections."""
+# ── Evidence, charts and the number check (like GoArif's Analyze agent) ────────
+
+_NUM = re.compile(r"(?<![\w.])[-+]?(?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[.,]\d+)?")
+_CITE = re.compile(r"\[\s*(E\d+(?:\s*[,;]\s*E\d+)*)\s*\]")
+_EXTRA = {"en": ("Analysis", "Visualizations", "Conclusion", "Actionable insight", "Evidence", "not verified"),
+          "id": ("Analisis", "Visualisasi", "Kesimpulan", "Insight yang dapat ditindaklanjuti", "Bukti",
+                 "belum terverifikasi")}
+
+
+def _add_evidence(t: Task, kind: str, label: str, code: str, text: str) -> str:
+    with t.lock:
+        items = t.r.setdefault("evidence", {})
+        eid = f"E{len(items) + 1}"
+        items[eid] = {"kind": {"run_sql": "sql", "make_table": "table"}.get(kind, "python"), "label": str(label)[:400],
+                      "code": str(code)[:4000], "text": re.sub(r"</?data_output>", "", text)[:6000]}
+    return eid
+
+
+def _add_chart(t: Task, chart: dict, eid: str, purpose: str) -> str:
+    with t.lock:
+        charts = t.r.setdefault("charts", {})
+        cid = f"C{len(charts) + 1}"
+        charts[cid] = {"url": chart["url"], "kind": chart.get("kind", "html"), "evidence": eid, "label": purpose[:160]}
+    return cid
+
+
+def _make_table(t: Task, args: dict, ev: dict) -> str:
+    """Figures read in sources → a CSV in the workspace, a DataFrame in Python and evidence (numbers checked)."""
+    import pandas as pd
+    from features import data_chat
+    cols = [str(c).strip()[:60] for c in args.get("columns") or [] if str(c).strip()]
+    rows = [r for r in args.get("rows") or [] if isinstance(r, list)][:200]
+    if len(cols) < 2 or not rows or any(len(r) != len(cols) for r in rows):
+        raise AgentError("give at least 2 columns and rows with one value per column")
+    pool = _pool(getattr(t, "seen", []) + [t.r["goal"]])
+    written = [str(v) for r in rows for v in r[1:] if v is not None and str(v).strip()]
+    bad = [w for w in written for m in _NUM.finditer(w) if not _supported(m.group(0), pool)
+           and not re.fullmatch(r"(19|20)\d\d", m.group(0))]
+    if bad:
+        raise AgentError("these values appear in no page, result or file you read: " + ", ".join(bad[:10]) +
+                         ". Use only figures you saw (browse / read_file the source first).")
+    df = pd.DataFrame(rows, columns=cols)
+    for c in cols[1:]:                                  # "12.5%" / "1,234" → numbers where the whole column parses
+        conv = pd.to_numeric(df[c].astype(str).str.replace(r"[%,\s]|Rp|USD|\$", "", regex=True), errors="coerce")
+        if conv.notna().sum() == df[c].notna().sum():
+            df[c] = conv
+    name = data_chat._ident(args.get("name") or args.get("title") or "table")[:40]
+    rel = f"tables/{name}.csv"
+    (t.files / rel).parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(t.files / rel, index=False)
+    try:
+        res = data_chat.add_file(_datachat(t), t.files / rel, name)
+    except data_chat.DataChatError as e:
+        raise AgentError(str(e))
+    loaded = (res.get("datasets") or [{}])[0].get("name", name)
+    source = str(args.get("source") or "")[:300]
+    eid = _add_evidence(t, "make_table", f"{str(args.get('title') or name)[:120]} (source: {source})", source,
+                        df.to_string(index=False)[:6000])
+    t.update_event(ev, file=rel, evidence=eid)
+    return (f"[evidence {eid}] Loaded as DataFrame `{loaded}` ({len(df)} rows; saved to {rel}). Chart it now with "
+            f"run_python, e.g. fig = px.bar({loaded}, x=\"{cols[0]}\", y=\"{cols[1]}\", title=\"<the finding>\").")
+
+
+def _values(token: str) -> list:
+    """A written number as candidate floats ("1.234,5" and "1,234.5" both), with its decimals."""
+    s = token.lstrip("+")
+    out = []
+    for dec, thou in ((".", ","), (",", ".")):
+        parts = s.split(dec)
+        if len(parts) > 2:
+            continue
+        whole = parts[0].replace(thou, "")
+        if not re.fullmatch(r"-?\d+", whole):
+            continue
+        frac = parts[1] if len(parts) == 2 else ""
+        if frac and not frac.isdigit():
+            continue
+        try:
+            out.append((float(f"{whole}.{frac}" if frac else whole), len(frac)))
+        except ValueError:
+            pass
+    return out
+
+
+def _supported(token: str, pool: list) -> bool:
+    """Is a written number in the evidence (allowing rounding, %, thousands/millions/billions)?"""
+    for v, d in _values(token):
+        if abs(v) < 10 and d == 0:                  # small integers (counts like "3 segments") are not checked
+            return True
+        tol = 0.5 * 10 ** -d + 1e-9
+        for p in pool:
+            for scale in (1, 100, 0.01, 1e-3, 1e-6, 1e-9):
+                if abs(p * scale - v) <= max(tol, abs(v) * 0.005 if d == 0 and abs(v) >= 1000 else tol):
+                    return True
+    return False
+
+
+def _pool(texts: list) -> list:
+    pool = []
+    for tx in texts:
+        for m in _NUM.finditer(tx or ""):
+            pool += [v for v, _ in _values(m.group(0))]
+    return pool
+
+
+def _findings(a: dict) -> list:
+    out = []
+    for f in a.get("key_findings") or []:
+        if isinstance(f, dict):
+            text = str(f.get("text") or "").strip()
+            refs = [str(r).strip().strip("[]") for r in f.get("evidence") or [] if str(r).strip()]
+        else:
+            text, refs = str(f).strip(), []
+        if text:
+            out.append({"text": text, "evidence": list(dict.fromkeys(refs)), "unverified": bool(
+                isinstance(f, dict) and f.get("unverified"))})
+    return out
+
+
+def _check_finish(t: Task, a: dict) -> str:
+    """Before the answer is accepted: findings cite real evidence holding their numbers, charts exist. Problems go
+    back to the model once; after that unsupported findings are marked "not verified"."""
+    ev = t.r.get("evidence") or {}
+    charts = t.r.get("charts") or {}
+    problems, weak = [], []
+    said = " ".join([str(a.get("answer", ""))] + [f.get("text", "") if isinstance(f, dict) else str(f)
+                                                  for f in a.get("key_findings") or []])
+    figures = [m.group(0) for m in _NUM.finditer(said) if not re.fullmatch(r"(19|20)\d\d", m.group(0))]
+    if not charts and (len(figures) >= 3 or (_did_data_work(t) and len(figures) >= 1)):
+        problems.append("the answer has figures but no chart: visualize the key numbers (2-5 charts). Data you "
+                        "computed: chart it in run_python. Figures from web pages or documents: put them in "
+                        "make_table (with the source), then chart that DataFrame in run_python. Show the charts in "
+                        "visuals with their finding title, conclusion and actionable insight")
+    findings = _findings(a)
+    for i, f in enumerate(findings, 1):
+        missing = [r for r in f["evidence"] if r not in ev]
+        if missing:
+            problems.append(f"finding {i} cites evidence that doesn't exist: {', '.join(missing)}")
+            weak.append(i)
+            continue
+        if not f["evidence"]:
+            continue                                 # web facts (listed in sources)
+        pool = _pool([ev[r]["text"] for r in f["evidence"]] + [t.r["goal"]])
+        bad = [m.group(0) for m in _NUM.finditer(f["text"]) if not _supported(m.group(0), pool)
+               and not re.fullmatch(r"(19|20)\d\d", m.group(0))]
+        if bad:
+            problems.append(f"finding {i}: {', '.join(bad[:6])} is not in its evidence {', '.join(f['evidence'])}")
+            weak.append(i)
+    for v in a.get("visuals") or []:
+        if isinstance(v, dict) and v.get("chart") not in charts:
+            problems.append(f"visual '{v.get('chart')}' is not a chart id you created ({', '.join(charts) or 'none'})")
+    if charts and not a.get("visuals"):
+        problems.append(f"you made charts ({', '.join(charts)}) but listed none in visuals: show the 2-5 that carry the "
+                        "key evidence, each with its finding title, conclusion and actionable insight")
+    if not problems:
+        return ""
+    if t.r.get("number_checks", 0) >= 1:
+        for i in weak:
+            f = (a.get("key_findings") or [])[i - 1]
+            if isinstance(f, dict):
+                f["unverified"] = True
+        a["visuals"] = [v for v in a.get("visuals") or [] if isinstance(v, dict) and v.get("chart") in charts]
+        return ""
+    t.r["number_checks"] = t.r.get("number_checks", 0) + 1
+    return ("Fix these before finishing:\n- " + "\n- ".join(problems[:12]) + "\nEach key finding lists the evidence "
+            "(E<n>) that contains its numbers. Don't restate numbers from memory: compute them now with run_python / "
+            "run_sql, cite the right evidence, or remove them. Then call finish again.")
+
+
+def _compose_answer(a: dict, t: Optional[Task] = None) -> str:
+    """The finish tool's fields as one markdown answer with fixed sections (charts are shown by the UI between
+    the findings and the analysis; `t.r['visuals']` holds them with their conclusion and actionable insight)."""
     if not any(a.get(k) for k in ("key_findings", "conclusion", "recommendations")):
         return str(a.get("answer", ""))                                  # plain answer (older calls)
-    h_find, h_conc, h_rec, h_risk, h_src, prio, h_impact = _HEADINGS.get(a.get("language"), _HEADINGS["en"])
-    parts = [str(a.get("answer", "")).strip()]
-    findings = [str(x).strip() for x in a.get("key_findings") or [] if str(x).strip()]
+    lang = a.get("language") if a.get("language") in _HEADINGS else "en"
+    h_find, h_conc, h_rec, h_risk, h_src, prio, h_impact = _HEADINGS[lang]
+    h_an, h_vis, w_conc, w_act, h_ev, w_unv = _EXTRA[lang]
+    ev = (t.r.get("evidence") or {}) if t else {}
+    cites: dict = {}
+
+    def cite(ref: str) -> str:
+        ref = ref.strip()
+        if ref not in ev:
+            return ""
+        cites.setdefault(ref, len(cites) + 1)
+        return f"[{cites[ref]}]"
+
+    def inline(text: str) -> str:
+        text = _CITE.sub(lambda m: "".join(cite(r) for r in re.split(r"\s*[,;]\s*", m.group(1))), text)
+        return re.sub(r"[ \t]+(?=[.,;:])", "", text)
+
+    parts = [inline(str(a.get("answer", "")).strip())]
+    findings = _findings(a)
     if findings:
-        parts.append(f"## {h_find}\n\n" + "\n".join(f"- {x}" for x in findings))
+        parts.append(f"## {h_find}\n\n" + "\n".join(
+            f"- {inline(f['text'])}{' ' + ''.join(cite(r) for r in f['evidence']) if f['evidence'] else ''}"
+            + (f" *({w_unv})*" if f["unverified"] else "") for f in findings))
+    charts = (t.r.get("charts") or {}) if t else {}
+    visuals = [v for v in a.get("visuals") or [] if isinstance(v, dict) and v.get("chart") in charts]
+    if t is not None:
+        t.r["visuals"] = [{"id": v["chart"], **charts[v["chart"]], "title": str(v.get("title", "")).strip()[:200],
+                           "conclusion": inline(str(v.get("conclusion", "")).strip()),
+                           "action": inline(str(v.get("action", "")).strip())} for v in visuals]
+        if visuals:                                   # the text version (Studio, copy): titles + explanations
+            parts.append(f"## {h_vis}\n\n" + "\n\n".join(
+                f"### {x['title']}\n\n**{w_conc}:** {x['conclusion']}\n\n**{w_act}:** {x['action']}"
+                for x in t.r["visuals"]))
+    if str(a.get("analysis", "")).strip():
+        body = re.sub(r"(?m)^#{1,2}\s", "### ", inline(str(a["analysis"]).strip()))
+        parts.append(f"## {h_an}\n\n{body}")
     if str(a.get("conclusion", "")).strip():
-        parts.append(f"## {h_conc}\n\n{str(a['conclusion']).strip()}")
+        parts.append(f"## {h_conc}\n\n{inline(str(a['conclusion']).strip())}")
     recs = [r for r in a.get("recommendations") or [] if isinstance(r, dict) and str(r.get("action", "")).strip()]
     order = {"high": 0, "medium": 1, "low": 2}
     recs.sort(key=lambda r: order.get(r.get("priority"), 1))
@@ -869,18 +1267,28 @@ def _compose_answer(a: dict) -> str:
             meta = " · ".join(x for x in (prio.get(r.get("priority"), ""), str(r.get("timeframe", "")).strip()) if x)
             line = f"{i}. **{str(r['action']).strip()}**" + (f" ({meta})" if meta else "")
             if str(r.get("why", "")).strip():
-                line += f"  \n   {str(r['why']).strip()}"
+                line += f"  \n   {inline(str(r['why']).strip())}"
             if str(r.get("impact", "")).strip():
-                line += f"  \n   *{h_impact}:* {str(r['impact']).strip()}"
+                line += f"  \n   *{h_impact}:* {inline(str(r['impact']).strip())}"
             lines.append(line)
         parts.append(f"## {h_rec}\n\n" + "\n".join(lines))
     risks = [str(x).strip() for x in a.get("risks_caveats") or [] if str(x).strip()]
     if risks:
-        parts.append(f"## {h_risk}\n\n" + "\n".join(f"- {x}" for x in risks))
+        parts.append(f"## {h_risk}\n\n" + "\n".join(f"- {inline(x)}" for x in risks))
     srcs = [x for x in a.get("sources") or [] if isinstance(x, dict) and str(x.get("url", "")).startswith("http")]
     if srcs:
         parts.append(f"## {h_src}\n\n" + "\n".join(f"- [{str(x.get('title') or x['url']).strip()}]({x['url']})"
                                                        for x in srcs))
+    if cites:                                         # what each [n] points to: the calculation behind it
+        lines = []
+        for ref, n in cites.items():
+            e = ev[ref]
+            if e["kind"] == "table":                    # figures read in a source: the label names the source
+                lines.append(f"**[{n}]** {e['label'] or ref}")
+                continue
+            lines.append(f"**[{n}]** {e['label'] or ref}\n\n```{'sql' if e['kind'] == 'sql' else 'python'}\n"
+                         f"{e['code'][:1500]}\n```")
+        parts.append(f"## {h_ev}\n\n" + "\n\n".join(lines))
     return "\n\n".join(p for p in parts if p)
 
 
@@ -1020,6 +1428,41 @@ def _sub_done(t: Task, sub: dict, findings: str, sources: list):
 _deliver_lock = threading.Lock()          # the report tools name files by timestamp
 
 
+def _report_charts(t: Task, picks: list) -> list:
+    """PNG paths for the chosen charts, named after their finding (the report uses the name as the chart title)."""
+    from features import data_chat
+    charts, sid = t.r.get("charts") or {}, t.r.get("datachat_sid")
+    if not sid:
+        return []
+    out_dir = t.dir / "report_charts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for p in picks[:8]:
+        c = charts.get(str((p or {}).get("id", "")).strip()) if isinstance(p, dict) else None
+        if not c:
+            continue
+        try:
+            png = data_chat.chart_png(sid, c["url"].rsplit("/", 1)[-1])
+            dst = out_dir / f"chart_{len(paths) + 1}.png"
+            shutil.copyfile(png, dst)
+            ev = (t.r.get("evidence") or {}).get(c.get("evidence"), {})
+            dst.with_suffix(".meta.json").write_text(json.dumps(       # exact title + its numbers for the explainer
+                {"title": str(p.get("title") or c.get("label") or p["id"])[:160],
+                 "gemini_analysis": f"{ev.get('label', '')}\n" + re.sub(           # drop a plotly figure dump
+                     r"Figure\(\{.*", "", ev.get("text", ""), flags=re.S).strip()[:3000]}), encoding="utf-8")
+            paths.append(str(dst))
+        except Exception:                                               # noqa: BLE001 - a chart that won't render is skipped
+            continue
+    return paths
+
+
+def _did_data_work(t: Task) -> bool:
+    """The task analysed data: tables attached, a database, or numbers computed / tabulated in this run."""
+    if any(i.get("kind") == "table" for i in t.r.get("inputs") or []) or t.r.get("db"):
+        return True
+    return any(e.get("kind") in ("python", "sql", "table") for e in (t.r.get("evidence") or {}).values())
+
+
 def _deliver(t: Task, args: dict, ev: dict) -> str:
     kind, title = args.get("kind"), (args.get("title") or t.r["title"])[:120]
     t.out.mkdir(parents=True, exist_ok=True)
@@ -1036,6 +1479,18 @@ def _deliver(t: Task, args: dict, ev: dict) -> str:
         if missing:
             raise AgentError("the report needs " + " and ".join(f"a '## {m}' section" for m in missing) +
                              " (see REPORT STRUCTURE): add them, then call create_deliverable again")
+        # A report about data or figures must show them: chart first, then write the report (it is written once,
+        # so a chart made after this point would never reach the PDF, the deck or the Studio editors).
+        charts = t.r.get("charts") or {}
+        figures = [m.group(0) for m in _NUM.finditer(md) if not re.fullmatch(r"(19|20)\d\d", m.group(0))]
+        if not charts and (_did_data_work(t) or len(figures) >= 5):
+            raise AgentError("this report has data but no chart yet. First make 2-5 charts of the key numbers in "
+                             "run_python (figures from documents or web pages: make_table first, then chart that "
+                             "DataFrame), then call create_deliverable again listing them in charts")
+        picks = [p for p in (args.get("charts") or []) if isinstance(p, dict) and str(p.get("id", "")).strip() in charts]
+        if charts and not picks:                                       # charts were made but none listed: use them
+            picks = [{"id": cid, "title": c.get("label", "")} for cid, c in list(charts.items())[:6]]
+        args["charts"] = picks
         from tools.llm_guard import redact_text
         md, _ = redact_text(md)
         md = _MD_LINK.sub(lambda m: m.group(2), md)                     # no live links inside files
@@ -1043,11 +1498,12 @@ def _deliver(t: Task, args: dict, ev: dict) -> str:
         (t.out / f"{base}.md").write_text(f"# {title}\n\n{md}", encoding="utf-8")
         made.append({"title": f"{title} (Markdown)", "kind": "md", "url": f"/outputs/agent/{t.id}/{base}.md"})
         from tools.bank_report import generate_pdf_report, generate_ppt_report
+        pngs = _report_charts(t, args.get("charts") or [])
         for tool, key, ext, label in ((generate_pdf_report, "pdf_path", "pdf", "PDF report"),
                                       (generate_ppt_report, "ppt_path", "pptx", "Slide deck")):
             fn = getattr(tool, "func", tool)                             # CrewAI @tool wraps the function
             with _deliver_lock:
-                res = json.loads(fn(md, "[]", title))
+                res = json.loads(fn(md, json.dumps(pngs), title))
                 if res.get("status") == "success" and res.get(key):
                     dst = t.out / f"{base}.{ext}"
                     shutil.move(res[key], dst)

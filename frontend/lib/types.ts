@@ -23,6 +23,8 @@ export interface UploadedFile {
   rows?: number;
   columns?: string[];
   word_count?: number;
+  /** Data-quality report computed at upload (structured files). */
+  quality?: import("@/components/views/MetricsView").Quality;
 }
 
 /** A file brought in from an app by POST /api/connectors/import; used exactly like an upload. */
@@ -327,6 +329,9 @@ export interface DataChatSession {
   sql_frames: { name: string; rows: number; masked?: Record<string, string> }[];
   source: { kind: "files" | "database"; label: string; files: { name: string; format: string; size: number }[] };
   overview?: DataChatOverview;
+  /** Data-quality report over the uploaded files ({} when nothing was checked). */
+  quality?: Partial<import("@/components/views/MetricsView").Quality>;
+  quality_log?: string[];
 }
 
 export interface DataChatOverview {

@@ -4,8 +4,10 @@ Mirrors Bank_Agent/tools/engineer_tools.py with paths adjusted to this system.
 """
 
 import os
+import re
 import json
 import warnings
+from pathlib import Path
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -17,6 +19,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from crewai.tools import tool
+from tools.db_safety import safe_table, safe_columns, write_table, write_note, read_only_query
 from sqlalchemy import text
 from features.db_connect import cached_engine as create_engine   # one shared pool per database
 
@@ -26,6 +29,25 @@ from config import POSTGRES_URI, TAVILY_API_KEY, query_ollama as query_nvidia
 def _get_db_uri() -> str:
     """Return the active database URI (set per-run via ACTIVE_DB_URI env var)."""
     return os.environ.get("ACTIVE_DB_URI") or POSTGRES_URI
+
+
+_CSV_ROOTS = ("data", "outputs")      # uploads and run outputs; never .env, code or other folders
+
+
+def _workspace_csv(path: str) -> str:
+    """'csv:<path>' may only name a .csv/.tsv file under the project's data/ or outputs/ folders:
+    no URLs (SSRF), no absolute paths elsewhere, no ../ escapes, no secrets files."""
+    raw = (path or "").strip().strip('"').strip("'")
+    if "://" in raw or raw.startswith(("\\\\", "//")):
+        raise ValueError("csv: takes a file from the workspace, not a URL")
+    base = Path(__file__).resolve().parent.parent
+    p = Path(raw)
+    p = (p if p.is_absolute() else base / p).resolve()
+    if p.suffix.lower() not in (".csv", ".tsv", ".txt") or not p.is_file():
+        raise ValueError(f"csv: file not found or not a .csv/.tsv file: {raw}")
+    if not any(root in p.parents for root in (base / r for r in _CSV_ROOTS)):
+        raise ValueError("csv: files must be inside the workspace's data/ or outputs/ folders")
+    return str(p)
 
 
 def _db_dialect(uri: str) -> str:
@@ -75,9 +97,9 @@ def profile_database_table(table_name: str) -> str:
     """
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 10000", engine)   # sample for stats
+        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)   # sample for stats
         with engine.connect() as conn:
-            total_rows = int(conn.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar() or 0)
+            total_rows = int(conn.execute(text(f"SELECT COUNT(*) FROM {safe_table(engine, table_name)}")).scalar() or 0)
 
         # Build a concise profile — deliberately kept short so LLM context isn't overwhelmed
         columns_detail = []
@@ -153,9 +175,9 @@ def fetch_financial_data(symbol: str, period: str = "1y", interval: str = "1d") 
         df.columns = [str(c).split(" ")[0] for c in df.columns]
         df.dropna(axis=1, how="all", inplace=True)
 
-        table_name = f"market_{symbol.replace('.', '_').replace('-', '_').lower()}"
+        table_name = "market_" + re.sub(r"\W+", "_", symbol).strip("_").lower()
         engine = create_engine(_get_db_uri())
-        df.to_sql(table_name, engine, if_exists="replace", index=False)
+        table_name = write_table(df, table_name, engine)
 
         latest_close  = float(df["Close"].iloc[-1])
         initial_close = float(df["Close"].iloc[0])
@@ -202,9 +224,9 @@ def fetch_indonesian_bank_data(bank_code: str = "BBCA") -> str:
         except Exception:
             pass
 
-        table_name = f"bank_{bank_code.lower()}_historical"
+        table_name = "bank_" + re.sub(r"\W+", "_", bank_code).strip("_").lower() + "_historical"
         engine = create_engine(_get_db_uri())
-        hist.to_sql(table_name, engine, if_exists="replace", index=False)
+        table_name = write_table(hist, table_name, engine)
 
         return json.dumps({
             "status":          "success",
@@ -255,12 +277,13 @@ def web_search_collect(query: str) -> str:
 
         df = pd.DataFrame(records)
         engine = create_engine(_get_db_uri())
-        df.to_sql("web_research_data", engine, if_exists="append", index=False)
+        saved = write_table(df, "web_research_data", engine, if_exists="append")
 
         return json.dumps({
             "status":        "success",
             "results_count": len(results),
-            "saved_table":   "web_research_data",
+            "saved_table":   saved,
+            "note":          write_note("web_research_data", saved),
             "preview": [{"title": r.get("title", ""), "url": r.get("url", "")} for r in results[:3]],
         }, indent=2)
     except Exception as e:
@@ -304,7 +327,7 @@ def run_etl_pipeline(data_source: str, target_table: str, transformations: str =
                 dfs.append(temp)
             df = pd.concat(dfs, ignore_index=True)
         elif source_type == "csv":
-            df = pd.read_csv(source_value)
+            df = pd.read_csv(_workspace_csv(source_value))
         else:
             return json.dumps({"status": "error", "message": f"Unknown source type: {source_type}"})
 
@@ -331,12 +354,14 @@ def run_etl_pipeline(data_source: str, target_table: str, transformations: str =
             df["etl_timestamp"] = datetime.now().isoformat()
 
         engine = create_engine(_get_db_uri())
-        df.to_sql(target_table, engine, if_exists="replace", index=False)
+        requested = target_table
+        target_table = write_table(df, target_table, engine)
 
         return json.dumps({
             "status":       "success",
             "source":       data_source,
             "target_table": target_table,
+            "note":         write_note(requested, target_table),
             "rows_loaded":  len(df),
             "columns":      list(df.columns),
         }, indent=2)
@@ -358,7 +383,7 @@ def clean_table_columns(table_name: str) -> str:
     """
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 10000", engine)
+        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
         original_cols = list(df.columns)
         dropped = []
 
@@ -374,11 +399,12 @@ def clean_table_columns(table_name: str) -> str:
                 dropped.append(col)
 
         df.drop(columns=dropped, errors="ignore", inplace=True)
-        df.to_sql(table_name, engine, if_exists="replace", index=False)
+        saved = write_table(df, table_name.split(".")[-1].strip('"'), engine)
 
         return json.dumps({
             "status":          "success",
-            "table":           table_name,
+            "table":           saved,
+            "note":            write_note(table_name, saved),
             "dropped_columns": dropped,
             "kept_columns":    list(df.columns),
             "row_count":       len(df),
@@ -403,7 +429,7 @@ def normalize_column_dtypes(table_name: str) -> str:
     numeric_threshold = 0.90
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 10000", engine)
+        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
 
         converted = {}
         unchanged = {}
@@ -434,11 +460,12 @@ def normalize_column_dtypes(table_name: str) -> str:
             else:
                 unchanged[col] = f"only {ratio:.0%} numeric — kept as string"
 
-        df.to_sql(table_name, engine, if_exists="replace", index=False)
+        saved = write_table(df, table_name.split(".")[-1].strip('"'), engine)
 
         return json.dumps({
             "status":            "success",
-            "table":             table_name,
+            "table":             saved,
+            "note":              write_note(table_name, saved),
             "columns_converted": converted,
             "columns_unchanged": unchanged,
             "row_count":         len(df),
@@ -567,31 +594,17 @@ def query_database(sql_query: str) -> str:
     Returns:
         JSON with column names and up to 200 rows of results.
     """
-    sql_query = sql_query.strip().rstrip(";").strip()
-    if not sql_query.upper().startswith(("SELECT", "WITH")):
-        return json.dumps({"status": "error", "message": "Only SELECT queries are allowed."})
-    if ";" in sql_query:
-        return json.dumps({"status": "error", "message": "Only one SELECT statement per call (no ';')."})
     try:
-        # Inject LIMIT 10000 if the query has no limit, to avoid full scans on large tables
-        if "LIMIT" not in sql_query.upper():
-            sql_query = sql_query.rstrip().rstrip(";") + " LIMIT 10000"
+        # Same rules as Data chat's MCP run_sql: one parser-validated SELECT (no writes, DDL,
+        # file/network/sleep functions or system catalogs), only real tables, READ ONLY
+        # transaction with a timeout, at most 10,000 rows fetched.
+        from tools.sql_guard import SQLGuardError
         engine = create_engine(_get_db_uri())
-        # Raw driver SQL: pandas/SQLAlchemy would treat '%' (e.g. ILIKE '%x%') as a bind
-        # placeholder and fail with "immutabledict is not a sequence".
-        # Raw DB-API cursor with NO parameters, so the driver never treats '%' as a placeholder.
-        with engine.connect() as conn:
-            raw = conn.connection
-            cur = raw.cursor()
-            try:
-                if engine.dialect.name == "postgresql":
-                    cur.execute("SET TRANSACTION READ ONLY")      # writes fail at the database
-                cur.execute(sql_query)
-                cols = [d[0] for d in cur.description] if cur.description else []
-                df = pd.DataFrame(cur.fetchall() if cols else [], columns=cols)
-            finally:
-                cur.close()
-                raw.rollback()
+        try:
+            df = read_only_query(engine, sql_query, max_rows=10_000)
+        except SQLGuardError as e:
+            return json.dumps({"status": "error", "message": f"Query refused: {e}. Write one read-only SELECT "
+                                                             "over the tables from List Database Tables."})
         return json.dumps({
             "status":  "success",
             "rows":    len(df),

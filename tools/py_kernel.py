@@ -49,10 +49,14 @@ def _load(path: str, fmt: str) -> dict:
     if fmt == "tsv":
         return {"": pd.read_csv(path, sep="\t")}
     if fmt in ("xlsx", "xlsm", "xls"):
-        sheets = pd.read_excel(path, sheet_name=None)
+        # Every sheet, with the real header row found, total rows removed and text numbers fixed.
+        from tools.excel_reader import read_workbook, tables
+        sheets = tables(read_workbook(path))
+        if not sheets:
+            raise ValueError("no sheet with a data table was found")
         if len(sheets) == 1:
-            return {"": next(iter(sheets.values()))}
-        return {f"_{_ident(k)}": v for k, v in sheets.items()}
+            return {"": sheets[0]["df"]}
+        return {f"_{_ident(s['sheet'])}": s["df"] for s in sheets}
     if fmt == "parquet":
         return {"": pd.read_parquet(path)}
     if fmt == "feather":

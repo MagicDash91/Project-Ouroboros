@@ -27,6 +27,7 @@ os.environ["OTEL_SDK_DISABLED"]         = "true"
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 
 import re
+import shutil
 import json
 import uuid
 import queue
@@ -34,7 +35,7 @@ import asyncio
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 import pandas as pd
 
 BASE_DIR = Path(__file__).parent
@@ -649,13 +650,14 @@ def _run_analysis(task_id: str, req: CombinedRequest):
                 _sq_path   = BASE_DIR / "outputs" / "uploads" / f"combined_{ts_mrg}.db"
                 _dest_eng  = _ce_mrg(f"sqlite:///{_sq_path}")
                 for sfi in _structured_files:
-                    try:
-                        _src_eng = _ce_mrg(sfi["sqlite_uri"])
-                        _df_tmp  = pd.read_sql(f"SELECT * FROM {sfi['table_name']}", _src_eng)
-                        _df_tmp.to_sql(sfi["table_name"], _dest_eng, if_exists="replace", index=False)
-                        _push(task_id, f"  Loaded '{sfi['table_name']}' from {sfi['original_name']} ({len(_df_tmp)} rows)", "info")
-                    except Exception as _e:
-                        _push(task_id, f"  Skipped '{sfi['original_name']}': {_e}", "warn")
+                    for _tname in (sfi.get("tables") or [sfi["table_name"]]):     # every Excel sheet
+                        try:
+                            _src_eng = _ce_mrg(sfi["sqlite_uri"])
+                            _df_tmp  = pd.read_sql(f'SELECT * FROM "{_tname}"', _src_eng)
+                            _df_tmp.to_sql(_tname, _dest_eng, if_exists="replace", index=False)
+                            _push(task_id, f"  Loaded '{_tname}' from {sfi['original_name']} ({len(_df_tmp)} rows)", "info")
+                        except Exception as _e:
+                            _push(task_id, f"  Skipped '{_tname}' of '{sfi['original_name']}': {_e}", "warn")
                 _active_db = f"sqlite:///{_sq_path}"
                 if _db_uri_to_merge:
                     _active_db = _merge_db_sources(_active_db, _db_uri_to_merge, task_id)
@@ -689,10 +691,15 @@ def _run_analysis(task_id: str, req: CombinedRequest):
         _struct_summary = ""
         if _has_structured:
             _struct_summary = "\n".join(
-                f"  • {s['original_name']} → table '{s['table_name']}' "
-                f"({s['rows']} rows, {len(s['columns'])} cols: {', '.join(s['columns'][:15])})"
+                (f"  • {s['original_name']} → tables {', '.join(s['tables'])}" if len(s.get("tables") or []) > 1 else
+                 f"  • {s['original_name']} → table '{s['table_name']}' "
+                 f"({s['rows']} rows, {len(s['columns'])} cols: {', '.join(map(str, s['columns'][:15]))})")
+                + (f"\n{s['workbook_guide']}" if s.get("workbook_guide") else "")
+                + (f"\n{s['quality_summary']}" if s.get("quality_summary") else "")
                 for s in _structured_files
             )
+            from features.metrics import prompt_text as _metrics_text
+            _struct_summary += _metrics_text()
         if _has_explicit_db:
             _struct_summary += f"\n  • Database URI: {req.database_uri.strip()[:80]}…"
 
@@ -1482,11 +1489,41 @@ async def approve_hitl(task_id: str, req: ApproveRequest = None):
 
 
 _SUPPORTED_EXTS = {
-    ".csv", ".xlsx", ".xls",          # structured
+    ".csv", ".xlsx", ".xlsm", ".xls",  # structured
     ".pdf", ".docx", ".doc",           # documents
     ".pptx", ".ppt",                   # presentations
 }
-_STRUCTURED_EXTS = {".csv", ".xlsx", ".xls"}
+_STRUCTURED_EXTS = {".csv", ".xlsx", ".xlsm", ".xls"}
+
+
+def _model_features(model_ref: str) -> list:
+    """The input columns a trained model expects (empty if it can't be loaded)."""
+    try:
+        from features import scoring
+        return [str(f) for f in scoring.load_artifact(model_ref).get("features", [])]
+    except Exception:
+        return []
+
+
+def _best_sheet(frames: dict, model_ref: str = "", sheet: str = "") -> str:
+    """Which table of a multi-sheet upload to use for a model: the named sheet, else the one whose columns
+    cover most of the model's features, else the biggest table."""
+    if not frames:
+        raise HTTPException(status_code=422, detail="No sheet with a data table was found.")
+    if sheet:
+        key = sheet.strip().lower()
+        hit = next((n for n in frames if n.lower() == key or n.lower().endswith("_" + key.replace(" ", "_"))), None)
+        if hit is None:
+            raise HTTPException(status_code=422, detail=f"No sheet '{sheet}'. Sheets: {', '.join(frames)}")
+        return hit
+    feats = {f.lower() for f in _model_features(model_ref)} if model_ref else set()
+    if feats:
+        def cover(n):
+            return len(feats & {str(c).lower() for c in frames[n].columns})
+        best = max(frames, key=lambda n: (cover(n), frames[n].size))
+        if cover(best):
+            return best
+    return max(frames, key=lambda n: frames[n].size)
 
 
 def _ingest_file(filename: str, content: bytes) -> dict:
@@ -1509,21 +1546,46 @@ def _ingest_file(filename: str, content: bytes) -> dict:
 
     if ext in _STRUCTURED_EXTS:
         # ── Structured: load into SQLite ──────────────────────────────
-        try:
-            df = pd.read_csv(raw_path) if ext == ".csv" else pd.read_excel(raw_path)
-        except Exception as e:
-            raise HTTPException(status_code=422, detail=f"Could not read '{filename}': {e}")
-
         tbl = Path(filename).stem.lower()
         tbl = ("".join(c if c.isalnum() else "_" for c in tbl))[:50] or "data"
+        # Excel: EVERY sheet becomes a table (header row detected, total rows removed, text numbers fixed),
+        # and Claude writes a workbook guide that goes into the analysis prompts (tools/excel_reader.py).
+        frames, guide = {}, ""
+        try:
+            if ext == ".csv":
+                frames[tbl] = pd.read_csv(raw_path)
+            else:
+                from tools import excel_reader
+                sheets = excel_reader.read_workbook(raw_path)
+                tabs = excel_reader.tables(sheets)
+                if not tabs:
+                    raise ValueError("no sheet with a data table was found")
+                for s in tabs:
+                    name = tbl if len(tabs) == 1 else \
+                        f"{tbl}_{''.join(c if c.isalnum() else '_' for c in s['sheet'].lower())}"[:60]
+                    frames[name] = s["df"]
+                guide = excel_reader.understand(raw_path, filename, sheets)["guide"]
+                if len(tabs) > 1:
+                    guide += "\nSQL table per sheet: " + ", ".join(
+                        f"'{s['sheet']}' → {n}" for s, n in zip(tabs, frames))
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Could not read '{filename}': {e}")
 
         sqlite_path = upload_dir / f"{ts}_data.db"
         try:
             from sqlalchemy import create_engine as _ce_up
-            pd.DataFrame(df).to_sql(tbl, _ce_up(f"sqlite:///{sqlite_path}"),
-                                    if_exists="replace", index=False)
+            _eng = _ce_up(f"sqlite:///{sqlite_path}")
+            for name, frame in frames.items():
+                pd.DataFrame(frame).to_sql(name, _eng, if_exists="replace", index=False)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Could not store '{filename}': {e}")
+        tbl = max(frames, key=lambda n: frames[n].size)          # the main table (single-table features)
+        df = frames[tbl]
+        from tools import data_quality as _dq                    # checked on upload; told to the analysis
+        try:
+            _quality = _dq.check(frames)
+        except Exception:
+            _quality = {}
 
         _uploaded_files[file_id] = {
             "original_name": filename,
@@ -1535,6 +1597,9 @@ def _ingest_file(filename: str, content: bytes) -> dict:
             "rows":          len(df),
             "columns":       list(df.columns),
             "raw_path":      str(raw_path),
+            "tables":        list(frames),
+            "workbook_guide": guide,
+            "quality_summary": _quality["summary"] if _quality.get("issues") else "",
         }
         return {
             "file_id":    file_id,
@@ -1543,7 +1608,10 @@ def _ingest_file(filename: str, content: bytes) -> dict:
             "format":     ext.lstrip("."),
             "table_name": tbl,
             "rows":       len(df),
-            "columns":    list(df.columns),
+            "columns":    list(map(str, df.columns)),
+            "tables":     list(frames),
+            "sheets":     len(frames),
+            "quality":    {k: v for k, v in _quality.items() if k != "summary"},
         }
 
     else:
@@ -1595,41 +1663,53 @@ async def upload_data_files(files: List[UploadFile] = File(...)):
 
 def _execute_viz_code(code: str, output_path: str) -> tuple:
     """
-    Execute matplotlib/seaborn visualization code safely.
+    Run Claude-written matplotlib/seaborn code in the chart sandbox (tools/chart_runner.py):
+    a separate `python -I` process with a scrubbed environment (no API keys / DB URIs), an AST
+    screen (allowlisted imports, no file/OS/network/eval/dunder access), restricted builtins
+    and a time limit. Nothing generated by the model runs inside the API process.
     Returns (success: bool, message: str).
     """
-    BLOCKED = [
-        "import os", "import sys", "import subprocess", "import socket",
-        "import requests", "import pathlib", "__import__", "eval(", "exec(",
-        "open(", "os.system", "os.popen", "shutil",
-    ]
-    for b in BLOCKED:
-        if b in code:
-            return False, f"Blocked pattern '{b}' not allowed in visualization code."
+    import pickle
+    import tempfile
+    from tools.chart_codegen import _Sandbox
+    from tools.chart_runner import check_code
 
-    setup = (
-        "import matplotlib\nmatplotlib.use('Agg')\n"
-        "import matplotlib.pyplot as plt\nimport pandas as pd\nimport numpy as np\n"
-        "import json\nimport seaborn as sns\nfrom datetime import datetime\n"
-        f"OUTPUT_PATH = {repr(output_path)}\n"
-        "plt.style.use('dark_background')\n"
-        "plt.rcParams.update({"
-        "'figure.facecolor':'#0d1117','axes.facecolor':'#161b22',"
-        "'text.color':'#e6edf3','axes.labelcolor':'#e6edf3',"
-        "'xtick.color':'#8b949e','ytick.color':'#8b949e',"
-        "'axes.edgecolor':'#30363d','grid.color':'#21262d'"
-        "})\n"
-    )
-    full_code = setup + "\n" + code
-    if "plt.show()" in full_code:
-        full_code = full_code.replace("plt.show()", 'plt.savefig(OUTPUT_PATH, dpi=120, bbox_inches="tight"); plt.close()')
-    if "plt.savefig" not in full_code:
-        full_code += '\nplt.savefig(OUTPUT_PATH, dpi=120, bbox_inches="tight")\nplt.close()\n'
+    # The sandbox saves the figure itself; drop the model's own save/show/style/backend lines.
+    lines = [ln for ln in code.splitlines()
+             if not re.search(r"\b(savefig|show|style\.use|matplotlib\.use|rcParams)\b", ln)
+             and not re.match(r"\s*OUTPUT_PATH\s*=", ln)]
+    code = "\n".join(lines)
+    problems = check_code(code)
+    if problems:
+        return False, "Blocked by the code sandbox: " + "; ".join(problems[:5])
+    m = re.search(r"""(?:plt\.title|set_title|suptitle)\(\s*(?:f?["'])(.{1,120}?)["']""", code)
+    title = m.group(1) if m else ""
+
+    work = tempfile.mkdtemp(prefix="chatviz_")
     try:
-        exec(full_code, {})  # noqa: S102
+        data_path = os.path.join(work, "data.pkl")
+        with open(data_path, "wb") as fh:
+            pickle.dump(pd.DataFrame(), fh)
+        box = _Sandbox(data_path, work)
+        try:
+            ran = box.send({"jobs": [{"id": "c1", "code": code}]})
+            res = (ran.get("results") or [{}])[0]
+            if not res.get("ok"):
+                return False, f"Code execution error: {res.get('error', 'unknown error')}"
+            exported = box.send({"titles": {"c1": {"title": title, "subtitle": ""}}, "source": "Chat",
+                                 "out_dir": work, "stem": "chat"})
+            png = next((r.get("png") for r in exported.get("results", []) if r.get("id") == "c1"), "")
+        finally:
+            box.close()
+        if not png or not os.path.exists(png):
+            return False, "The chart could not be exported."
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(png, output_path)
         return True, "Chart generated successfully."
     except Exception as exc:
         return False, f"Code execution error: {exc}"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 _VIZ_KEYWORDS = (
@@ -1697,11 +1777,11 @@ async def _agentic_chat(
             "STRICT RULES:\n"
             "1. Use ONLY: matplotlib, seaborn, pandas, numpy, json, datetime\n"
             "2. Do NOT import os, sys, subprocess, requests, pathlib or any other module\n"
-            "3. Save with exactly: plt.savefig(OUTPUT_PATH, dpi=150, bbox_inches='tight')\n"
-            "4. Do NOT call plt.show()\n"
-            "5. Use hardcoded/synthetic data that matches the analytics report context\n"
-            "6. Chart must be dark-themed (plt.style.use('dark_background') is already applied)\n"
-            "7. Add a clear title and axis labels"
+            "3. Create the chart with fig, ax = plt.subplots() and leave it in the variable fig\n"
+            "4. Do NOT save, show or style the figure, and do not open files - the sandbox does that\n"
+            "5. Use only the numbers from the analytics report context, written into the code\n"
+            "6. No underscore-prefixed names, getattr/eval/exec, or file/OS/network access (blocked)\n"
+            "7. Add a clear title (ax.set_title) and axis labels"
         )
         code_user = (
             f"{context_block}\n\n"
@@ -1856,6 +1936,7 @@ async def api_predict(
     model_ref: str,                                   # query param (e.g. ?model_ref=churn_model)
     file:      Optional[UploadFile] = File(None),
     file_id:   Optional[str]        = Form(None),
+    sheet:     Optional[str]        = Form(None),     # Excel: which sheet to score (default: best match)
 ):
     """Score new rows against a trained model.
 
@@ -1872,15 +1953,21 @@ async def api_predict(
         tmp = BASE_DIR / "outputs" / "uploads" / f"score_in_{datetime.now():%Y%m%d_%H%M%S_%f}{ext}"
         tmp.write_bytes(raw)
         try:
-            df = pd.read_csv(tmp) if ext == ".csv" else pd.read_excel(tmp)
+            if ext == ".csv":
+                df = pd.read_csv(tmp)
+            else:                                    # every sheet read; score the one that fits the model
+                from tools import excel_reader
+                frames = {s["sheet"]: s["df"] for s in excel_reader.tables(excel_reader.read_workbook(tmp))}
+                df = frames[_best_sheet(frames, model_ref, sheet or "")]
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"Could not read '{file.filename}': {e}")
     elif file_id:
         info = _uploaded_files.get(file_id.strip())
         if not info or info.get("file_type") != "structured":
             raise HTTPException(status_code=404, detail="Structured upload not found for file_id.")
-        from sqlalchemy import create_engine as _ce
-        df = pd.read_sql(f"SELECT * FROM {info['table_name']}", _ce(info["sqlite_uri"]))
+        df = _df_from_file_id(file_id, model_ref, sheet or "")
     else:
         raise HTTPException(status_code=400, detail="Provide either a file or a file_id.")
 
@@ -1979,12 +2066,18 @@ async def api_monitor_alerts(monitor_id: str, limit: int = 100):
 # FEATURE 3 — Deeper analysis: drivers, what-if, NL data explorer
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _df_from_file_id(file_id: str) -> pd.DataFrame:
+def _df_from_file_id(file_id: str, model_ref: str = "", sheet: str = "") -> pd.DataFrame:
+    """An upload's table for a model: with several Excel sheets, the one that fits the model (see _best_sheet)."""
     info = _uploaded_files.get((file_id or "").strip())
     if not info or info.get("file_type") != "structured":
         raise HTTPException(status_code=404, detail="Structured upload not found for file_id.")
     from sqlalchemy import create_engine as _ce
-    return pd.read_sql(f"SELECT * FROM {info['table_name']}", _ce(info["sqlite_uri"]))
+    eng = _ce(info["sqlite_uri"])
+    names = info.get("tables") or [info["table_name"]]
+    if len(names) == 1:
+        return pd.read_sql(f'SELECT * FROM "{names[0]}"', eng)
+    frames = {n: pd.read_sql(f'SELECT * FROM "{n}"', eng) for n in names}
+    return frames[_best_sheet(frames, model_ref, sheet)]
 
 
 class DriverRequest(BaseModel):
@@ -2013,7 +2106,7 @@ class ExploreRequest(BaseModel):
 async def api_drivers(req: DriverRequest):
     """Rank what drives a trained model's predictions (SHAP when data is given)."""
     from features import deeper
-    df = _df_from_file_id(req.file_id) if req.file_id else None
+    df = _df_from_file_id(req.file_id, req.model_ref) if req.file_id else None
     try:
         return await asyncio.to_thread(deeper.driver_analysis, req.model_ref, df, req.top_n)
     except FileNotFoundError as e:
@@ -2026,7 +2119,7 @@ async def api_drivers(req: DriverRequest):
 async def api_whatif(req: WhatIfRequest):
     """Simulate how changing inputs moves a trained model's predicted probability."""
     from features import deeper
-    df = _df_from_file_id(req.file_id) if req.file_id else None
+    df = _df_from_file_id(req.file_id, req.model_ref) if req.file_id else None
     try:
         return await asyncio.to_thread(
             deeper.what_if, req.model_ref, req.overrides, df, req.base_row)
@@ -2045,7 +2138,10 @@ async def api_explore(req: ExploreRequest):
         info = _uploaded_files.get(req.file_id.strip())
         if not info or info.get("file_type") != "structured":
             raise HTTPException(status_code=404, detail="Structured upload not found for file_id.")
-        db_uri, table = info["sqlite_uri"], info["table_name"]
+        # Every sheet of a workbook is its own table: let the question use all of them (unless one is named).
+        db_uri = info["sqlite_uri"]
+        table = req.table if req.table in (info.get("tables") or []) else \
+            (None if len(info.get("tables") or []) > 1 else info["table_name"])
     try:
         return await asyncio.to_thread(deeper.nl_explore, req.question, db_uri, table)
     except Exception as e:
@@ -2110,6 +2206,359 @@ async def api_dashboard_data(dash_id: str, req: DashboardDataRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Dashboard data failed: {e}")
+
+
+# ── Auto Dashboard: GoArif-style automatic dashboards (features/auto_dashboard.py) ──
+
+class AutoDashFilters(BaseModel):
+    filters: Dict[str, List[str]] = {}
+
+
+class AutoDashChat(BaseModel):
+    message: str
+    filters: Dict[str, List[str]] = {}
+    chart_id: str = ""
+
+
+class AutoDashLayout(BaseModel):
+    kpis: List[dict] = []
+    charts: List[dict] = []
+    filters: Dict[str, List[str]] = {}
+    palette: Optional[List[str]] = None
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+
+
+class AutoDashRestore(BaseModel):
+    version: int
+
+
+class AutoDashExport(BaseModel):
+    filters: Dict[str, List[str]] = {}
+    format: str = "xlsx"
+
+
+def _autodash_call(fn, *args, **kwargs):
+    """Map engine errors to HTTP codes (runs in a worker thread)."""
+    from features import auto_dashboard as ad
+    from features.db_connect import ConnectionStringError
+    try:
+        return fn(*args, **kwargs)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ad.PromptRejected, ad.AutoDashError, ConnectionStringError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Auto dashboard failed: {str(e).splitlines()[0][:300]}")
+
+
+def _refund_on_failure(charge_id: str, reason: str):
+    from features import billing
+
+    def done(ok: bool):
+        if not ok:
+            billing.refund(charge_id, reason)
+    return done
+
+
+@app.post("/api/autodash")
+async def api_autodash_create(files: List[UploadFile] = File(default=[]), db_uri: str = Form(default=""),
+                              db_schema: str = Form(default=""), goal: str = Form(default=""),
+                              language: str = Form(default="English"), kit: str = Form(default=""),
+                              import_ids: str = Form(default="")):
+    """Build a dashboard from files, a database, sample data (kit) or a mix. Poll /api/autodash/jobs/{job_id}."""
+    from features import auto_dashboard as ad, billing
+    payload = []
+    for f in files[:ad.MAX_FILES + 1]:
+        if f.filename:
+            payload.append((f.filename, await f.read(ad.MAX_FILE_BYTES + 1)))
+    payload += _imported_payload([i for i in import_ids.split(",") if i], tables_only=True)
+    if kit:
+        from features import kits
+        payload += await asyncio.to_thread(_kit_call, kits.files, kit[:40])
+    charge_id = _charge_or_402("autodash_build", note="Auto dashboard build")
+    try:
+        return await asyncio.to_thread(_autodash_call, ad.create, payload, db_uri[:4000], db_schema[:128],
+                                       goal, language[:20], kit[:40], _refund_on_failure(charge_id, "dashboard build failed"))
+    except Exception:
+        await asyncio.to_thread(billing.refund, charge_id, "dashboard not started")
+        raise
+
+
+@app.get("/api/autodash")
+async def api_autodash_list():
+    from features import auto_dashboard as ad
+    return await asyncio.to_thread(ad.list_dashboards)
+
+
+@app.get("/api/autodash/jobs/{job_id}")
+async def api_autodash_job(job_id: str):
+    from features import auto_dashboard as ad
+    return await asyncio.to_thread(_autodash_call, ad.get_job, job_id[:20])
+
+
+@app.get("/api/autodash/{did}")
+async def api_autodash_get(did: str):
+    from features import auto_dashboard as ad
+    return await asyncio.to_thread(_autodash_call, ad.get, did)
+
+
+@app.post("/api/autodash/{did}/render")
+async def api_autodash_render(did: str, req: AutoDashFilters):
+    """Re-run the saved queries with the selected filters (no AI, free)."""
+    from features import auto_dashboard as ad
+    return await asyncio.to_thread(_autodash_call, ad.render, did, req.filters)
+
+
+@app.post("/api/autodash/{did}/chat")
+async def api_autodash_chat(did: str, req: AutoDashChat):
+    """Ask about the dashboard or edit it with AI. Poll /api/autodash/jobs/{job_id}."""
+    from features import auto_dashboard as ad, billing
+    charge_id = _charge_or_402("autodash_chat", ref=did, note="Auto dashboard chat")
+    try:
+        return await asyncio.to_thread(_autodash_call, ad.start_chat, did, req.message, req.filters, req.chart_id,
+                                       _refund_on_failure(charge_id, "dashboard chat failed"))
+    except Exception:
+        await asyncio.to_thread(billing.refund, charge_id, "chat not started")
+        raise
+
+
+@app.post("/api/autodash/{did}/layout")
+async def api_autodash_layout(did: str, req: AutoDashLayout):
+    """Manual edits (order, titles, chart types, sizes, colours, theme) saved as a new version. No AI, free."""
+    from features import auto_dashboard as ad
+    return await asyncio.to_thread(_autodash_call, ad.layout, did, req.kpis, req.charts, req.filters,
+                                   req.palette, req.title, req.subtitle)
+
+
+@app.post("/api/autodash/{did}/restore")
+async def api_autodash_restore(did: str, req: AutoDashRestore):
+    from features import auto_dashboard as ad
+    return await asyncio.to_thread(_autodash_call, ad.restore, did, req.version)
+
+
+@app.post("/api/autodash/{did}/export")
+async def api_autodash_export(did: str, req: AutoDashExport):
+    """Excel (data behind every visual) or PowerPoint (native, editable charts) with the current filters."""
+    from fastapi.responses import Response
+    from features import auto_dashboard as ad
+    fmt = "pptx" if req.format == "pptx" else "xlsx"
+    fn = ad.export_pptx if fmt == "pptx" else ad.export_xlsx
+    data, name = await asyncio.to_thread(_autodash_call, fn, did, req.filters)
+    mime = ("application/vnd.openxmlformats-officedocument.presentationml.presentation" if fmt == "pptx"
+            else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return Response(content=data, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.delete("/api/autodash/{did}")
+async def api_autodash_delete(did: str):
+    from features import auto_dashboard as ad
+    await asyncio.to_thread(_autodash_call, ad.delete_dashboard, did)
+    return {"deleted": did}
+
+
+import io
+
+
+@app.post("/api/datachat/sessions/{sid}/quality/fix")
+async def api_datachat_quality_fix(sid: str, fix: dict):
+    """One-click data-quality fix in a Data chat (the fixed table is reloaded into the chat's Python)."""
+    from features import data_chat
+    try:
+        return await asyncio.to_thread(data_chat.quality_fix, sid, fix)
+    except (FileNotFoundError, data_chat.DataChatError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/upload/{file_id}/quality/fix")
+async def api_upload_quality_fix(file_id: str, fix: dict):
+    """One-click data-quality fix on an uploaded file before an Analytics run (rewrites its table)."""
+    from sqlalchemy import create_engine as _ce
+    from tools import data_quality
+    info = _uploaded_files.get(file_id)
+    if not info or info.get("file_type") != "structured":
+        raise HTTPException(status_code=404, detail="Upload not found (the server may have restarted; upload again).")
+    def run():
+        eng = _ce(info["sqlite_uri"])
+        names = info.get("tables") or [info["table_name"]]
+        frames = {t: pd.read_sql(f'SELECT * FROM "{t}"', eng) for t in names}
+        frames, note = data_quality.apply_fix(frames, fix)
+        frames[fix["table"]].to_sql(fix["table"], eng, if_exists="replace", index=False)
+        q = data_quality.check(frames)
+        info["quality_summary"] = q["summary"] if q.get("issues") else ""
+        info.setdefault("quality_log", []).append(note)
+        return {"fixed": note, "log": info["quality_log"], "quality": {k: v for k, v in q.items() if k != "summary"}}
+    try:
+        return await asyncio.to_thread(run)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/autodash/{did}/quality/fix")
+async def api_autodash_quality_fix(did: str, fix: dict):
+    """One-click data-quality fix on a dashboard's uploaded data (no AI, free)."""
+    from features import auto_dashboard as ad
+    return await asyncio.to_thread(_autodash_call, ad.quality_fix, did, fix)
+
+
+# ── Metrics: the semantic layer (features/metrics.py) ─────────────────────────
+
+def _metric_call(fn, *args):
+    from features import metrics
+    try:
+        return fn(*args)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except metrics.MetricError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/metrics")
+async def api_metrics_list():
+    from features import metrics
+    return metrics.list_metrics()
+
+
+@app.post("/api/metrics")
+async def api_metrics_create(body: dict):
+    from features import metrics
+    return await asyncio.to_thread(_metric_call, metrics.save_metric, body)
+
+
+@app.put("/api/metrics/{mid}")
+async def api_metrics_update(mid: str, body: dict):
+    from features import metrics
+    return await asyncio.to_thread(_metric_call, metrics.save_metric, body, mid)
+
+
+@app.delete("/api/metrics/{mid}")
+async def api_metrics_delete(mid: str):
+    from features import metrics
+    await asyncio.to_thread(_metric_call, metrics.delete_metric, mid)
+    return {"deleted": mid}
+
+
+def _dashboard_frames(did: str) -> dict:
+    """{table: DataFrame} of an Auto Dashboard's uploaded data (to test / suggest metrics)."""
+    import sqlite3
+    from features import auto_dashboard as ad
+    meta = ad._load(did)
+    con = sqlite3.connect(f"file:{ad._workspace(did).as_posix()}?mode=ro", uri=True)
+    try:
+        return {t: pd.read_sql_query(f'SELECT * FROM "{t}" LIMIT 200000', con) for t in meta.get("tables", {})}
+    finally:
+        con.close()
+
+
+@app.post("/api/metrics/test")
+async def api_metrics_test(body: dict):
+    """Run a saved or draft metric on a table of an Auto Dashboard's data: {metric, dashboard_id, table}."""
+    from features import metrics
+    def run():
+        frames = _dashboard_frames(str(body.get("dashboard_id", "")))
+        table = str(body.get("table") or "") or (max(frames, key=lambda t: frames[t].size) if frames else "")
+        if table not in frames:
+            raise metrics.MetricError("Pick a dashboard built from uploaded files.")
+        return {**metrics.test_on_frame(body.get("metric") or {}, frames[table], table), "table": table,
+                "tables": list(frames)}
+    return await asyncio.to_thread(_metric_call, run)
+
+
+@app.post("/api/metrics/suggest")
+async def api_metrics_suggest(body: dict):
+    """Claude proposes metric definitions from an Auto Dashboard's data (3 credits; nothing is saved)."""
+    from features import billing, metrics
+    from tools import excel_reader
+    try:
+        frames = await asyncio.to_thread(_dashboard_frames, str(body.get("dashboard_id", "")))
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Dashboard data not found: {e}")
+    if not frames:
+        raise HTTPException(status_code=400, detail="Pick a dashboard built from uploaded files.")
+    prof = excel_reader.profile([{"sheet": t, "kind": "table", "df": df, "notes": [], "title": ""}
+                                 for t, df in frames.items()], "dashboard data")
+    charge_id = _charge_or_402("agent_ai_edit", note="Metrics · suggest")
+    try:
+        return {"metrics": await asyncio.to_thread(_metric_call, metrics.suggest, prof)}
+    except Exception:
+        await asyncio.to_thread(billing.refund, charge_id, "suggest failed")
+        raise
+
+
+# ── Data quality on any file (tools/data_quality.py) ──────────────────────────
+
+_QUALITY_FILES: dict = {}          # token -> {"frames", "name", "log"}, in memory for one-click fixes
+
+
+@app.post("/api/quality/check")
+async def api_quality_check(file: UploadFile = File(...)):
+    """Check a CSV / Excel file (every sheet): duplicates, missing, impossible values, outliers, inconsistent
+    spellings, date gaps, broken joins. Returns the report and a token for fixes and the cleaned download."""
+    from tools import data_quality, excel_reader
+    content = await file.read(60 * 1024 * 1024 + 1)
+    name = Path(file.filename or "data.csv").name
+    if not (excel_reader.is_excel(name) or name.lower().endswith((".csv", ".txt", ".tsv"))):
+        raise HTTPException(status_code=400, detail="Upload a CSV or Excel file.")
+    def run():
+        if excel_reader.is_excel(name):
+            frames = {s["sheet"]: s["df"] for s in excel_reader.tables(excel_reader.read_workbook(content))}
+        else:
+            frames = {Path(name).stem: pd.read_csv(io.BytesIO(content), sep=None, engine="python")}
+        token = uuid.uuid4().hex[:12]
+        _QUALITY_FILES[token] = {"frames": frames, "name": name, "log": []}
+        while len(_QUALITY_FILES) > 20:
+            _QUALITY_FILES.pop(next(iter(_QUALITY_FILES)))
+        return {"token": token, "name": name, "tables": {t: len(df) for t, df in frames.items()},
+                **data_quality.check(frames)}
+    try:
+        return await asyncio.to_thread(run)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not read the file: {str(e).splitlines()[0][:200]}")
+
+
+@app.post("/api/quality/{token}/fix")
+async def api_quality_fix(token: str, fix: dict):
+    from tools import data_quality
+    st = _QUALITY_FILES.get(token)
+    if not st:
+        raise HTTPException(status_code=404, detail="That check expired; upload the file again.")
+    try:
+        st["frames"], note = await asyncio.to_thread(data_quality.apply_fix, st["frames"], fix)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    st["log"].append(note)
+    return {"token": token, "fixed": note, "log": st["log"], "tables": {t: len(df) for t, df in st["frames"].items()},
+            **data_quality.check(st["frames"])}
+
+
+@app.get("/api/quality/{token}/download")
+async def api_quality_download(token: str):
+    """The cleaned data as Excel (one sheet per table) with a 'Fixes' sheet listing what changed."""
+    from fastapi.responses import Response
+    st = _QUALITY_FILES.get(token)
+    if not st:
+        raise HTTPException(status_code=404, detail="That check expired; upload the file again.")
+    def build():
+        bio = io.BytesIO()
+        with pd.ExcelWriter(bio, engine="openpyxl") as xw:
+            for t, df in st["frames"].items():
+                df.to_excel(xw, sheet_name=re.sub(r"[\[\]:*?/\\]", "", str(t))[:31] or "data", index=False)
+            pd.DataFrame({"Fix applied": st["log"] or ["(none)"]}).to_excel(xw, sheet_name="Fixes", index=False)
+        return bio.getvalue()
+    data = await asyncio.to_thread(build)
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(st["name"]).stem)[:60] or "data"
+    return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{stem}_cleaned.xlsx"'})
+
+
+@app.get("/api/security/status")
+async def api_security_status():
+    """State of the LLM security layer (no secrets): limits, calls in the last minute, tokens today."""
+    from tools import llm_security
+    llm_security.install()          # idempotent
+    return llm_security.status()
 
 
 # ── Data chat: chat with a database or tabular files (features/data_chat.py) ──
@@ -2244,6 +2693,19 @@ async def api_agent_create(req: AgentTaskRequest):
     attachments = _imported_payload(req.import_ids[:10])
     return await asyncio.to_thread(_agent_call, agent.create_task, req.goal, req.db_uri[:4000], req.db_schema[:128],
                                    attachments)
+
+
+@app.post("/api/agent/tasks/upload")
+async def api_agent_create_upload(goal: str = Form(...), db_uri: str = Form(default=""), db_schema: str = Form(default=""),
+                                  import_ids: str = Form(default=""), files: List[UploadFile] = File(default=[])):
+    """Create an Agent task with the user's own files (PDF, Word, PowerPoint, Excel, CSV, text …) and/or app imports."""
+    from features import agent
+    attachments = []
+    for f in files[:agent.MAX_INPUTS + 1]:
+        if f.filename:
+            attachments.append((f.filename, await f.read(agent.MAX_INPUT_MB * 1024 * 1024 + 1)))
+    attachments += _imported_payload([i for i in import_ids.split(",") if i][:10])
+    return await asyncio.to_thread(_agent_call, agent.create_task, goal, db_uri[:4000], db_schema[:128], attachments)
 
 
 @app.get("/api/agent/tasks")
@@ -2391,6 +2853,19 @@ def _studio_routes(prefix: str, to_ref):
     async def _ai(kind: str, req: StudioAI, request: Request):
         return await _studio_ai(to_ref(request.path_params), kind, req)
 
+    @app.post(prefix + "/{kind}/explain")
+    async def _explain(kind: str, request: Request, redo: bool = False):
+        """Write a Conclusion + Actionable insight for every chart / table / picture (one Claude call)."""
+        from features import billing
+        ref = to_ref(request.path_params)
+        await asyncio.to_thread(_studio_call, studio.get, ref, kind)          # 404 before charging
+        charge_id = _charge_or_402("agent_ai_edit", ref=ref, note="Studio · explain visuals")
+        try:
+            return await asyncio.to_thread(_studio_call, studio.explain_visuals, ref, kind, redo)
+        except Exception:
+            await asyncio.to_thread(billing.refund, charge_id, "explain failed")
+            raise
+
     @app.get(prefix + "/{kind}/versions")
     async def _versions(kind: str, request: Request):
         return await asyncio.to_thread(_studio_call, studio.versions, to_ref(request.path_params), kind)
@@ -2426,6 +2901,16 @@ def _studio_routes(prefix: str, to_ref):
 _studio_routes("/api/agent/tasks/{tid}/studio", lambda p: f"agent:{p['tid']}")
 _studio_routes("/api/runs/{run_id}/studio/{report}", lambda p: f"run:{p['run_id']}:{p['report']}")
 _studio_routes("/api/datachat/sessions/{sid}/studio", lambda p: f"chat:{p['sid']}")
+_studio_routes("/api/autodash/{did}/studio", lambda p: f"autodash:{p['did']}")
+_studio_routes("/api/workflows/{wid}/runs/{rid}/nodes/{nid}/studio", lambda p: f"wf:{p['wid']}:{p['rid']}:{p['nid']}")
+
+
+@app.post("/api/studio/upload")
+async def api_studio_upload(file: UploadFile = File(...)):
+    """A picture for a deck or document. Re-encoded server side (PNG/JPEG only), named by its content hash."""
+    from features import studio
+    content = await file.read(studio.MAX_UPLOAD_BYTES + 1)
+    return await asyncio.to_thread(_studio_call, studio.save_upload, content)
 
 
 # ── Data chat extras: overview, glossary, exports, pinboard (features/data_chat.py) ──
@@ -2820,7 +3305,7 @@ async def api_wf_import(wid: str, req: ConnectorImportRequest):
         name, data = await asyncio.to_thread(connectors.fetch, req.connector, params)
     except connectors.ConnectorError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if Path(name).suffix.lower() not in (".csv", ".xlsx", ".xls"):
+    if Path(name).suffix.lower() not in (".csv", ".xlsx", ".xlsm", ".xls"):
         raise HTTPException(status_code=400, detail=f"{name} is a document; workflows need a table.")
     info = await asyncio.to_thread(_wf_call, workflow.add_file, wid, name, data)
     return {"file_id": info["name"], "filename": info["name"], "type": "structured", "rows": info["rows"],
@@ -2932,6 +3417,76 @@ async def _meter_calls(request, call_next):
     if response.status_code >= 400:
         await asyncio.to_thread(billing.refund, charge_id, f"call failed ({response.status_code})")
     return response
+
+
+# ── Accounts (features/auth.py): sign up / log in, and the sign-in requirement on the API ──
+# Registered after _meter_calls, so it runs first: nothing is charged for a request that isn't signed in.
+_AUTH_OPEN = ("/api/auth/", "/api/share/", "/api/stream/")   # stream ids are random; EventSource sends no cookie
+
+
+@app.middleware("http")
+async def _require_sign_in(request, call_next):
+    path = request.url.path
+    if (request.method == "OPTIONS" or not path.startswith("/api/") or path.startswith(_AUTH_OPEN)
+            or re.fullmatch(r"/api/oauth/[a-z]+/callback", path)):
+        return await call_next(request)
+    from features import auth
+    if not auth.required():
+        return await call_next(request)
+    user = await asyncio.to_thread(auth.user_for, request.cookies.get(auth.COOKIE, ""))
+    if not user:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=401, content={"detail": "Please log in to continue."})
+    request.state.user = user
+    return await call_next(request)
+
+
+def _session_response(request: Request, user: dict, token: str):
+    from fastapi.responses import JSONResponse
+    from features import auth
+    resp = JSONResponse({"user": user})
+    resp.set_cookie(auth.COOKIE, token, max_age=auth.SESSION_DAYS * 86400, httponly=True, samesite="lax",
+                    secure=request.url.scheme == "https", path="/")
+    return resp
+
+
+@app.post("/api/auth/signup")
+async def api_auth_signup(request: Request, body: dict):
+    from features import auth
+    try:
+        user, token = await asyncio.to_thread(auth.signup, str(body.get("email", "")), str(body.get("password", "")),
+                                              str(body.get("name", "")))
+    except auth.AuthError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    return _session_response(request, user, token)
+
+
+@app.post("/api/auth/login")
+async def api_auth_login(request: Request, body: dict):
+    from features import auth
+    try:
+        user, token = await asyncio.to_thread(auth.login, str(body.get("email", "")), str(body.get("password", "")),
+                                              request.client.host if request.client else "")
+    except auth.AuthError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    return _session_response(request, user, token)
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout(request: Request):
+    from fastapi.responses import JSONResponse
+    from features import auth
+    await asyncio.to_thread(auth.logout, request.cookies.get(auth.COOKIE, ""))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/auth/me")
+async def api_auth_me(request: Request):
+    from features import auth
+    user = await asyncio.to_thread(auth.user_for, request.cookies.get(auth.COOKIE, ""))
+    return {"user": user, "required": auth.required()}
 
 
 def _charge_or_402(action: str, ref: str = "", note: str = "") -> str:
@@ -3108,12 +3663,158 @@ async def api_rag_query(req: RagRequest):
         raise HTTPException(status_code=500, detail=f"RAG query failed: {e}")
 
 
+# ── AutoML ─────────────────────────────────────────────────────────────────────
+
+def _automl_call(fn, *args, **kwargs):
+    from features import automl, billing
+    try:
+        return fn(*args, **kwargs)
+    except automl.AutoMLError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except billing.InsufficientCredits as e:
+        raise HTTPException(status_code=402, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/automl/uploads")
+async def api_automl_uploads():
+    """Structured files already uploaded in this session (Analytics uploads, imports)."""
+    return [{"file_id": fid, "name": f["original_name"], "tables": f.get("tables") or [f["table_name"]],
+             "rows": f.get("rows")} for fid, f in _uploaded_files.items() if f.get("file_type") == "structured"]
+
+
+@app.post("/api/automl/datasets")
+async def api_automl_dataset(file: Optional[UploadFile] = File(default=None), db_uri: str = Form(default=""),
+                             db_schema: str = Form(default=""), table: str = Form(default=""),
+                             file_id: str = Form(default="")):
+    """Load the data to learn from (free): a file, an upload already in the workspace, or a database table."""
+    from features import automl
+    files, sqlite_uri = [], ""
+    if file is not None and file.filename:
+        files = [(file.filename, await file.read(200 * 1024 * 1024 + 1))]
+    elif file_id:
+        up = _uploaded_files.get(file_id)
+        if not up or up.get("file_type") != "structured":
+            raise HTTPException(status_code=404, detail="That upload isn't available any more – upload the file again.")
+        sqlite_uri, table = up["sqlite_uri"], table or up["table_name"]
+    return await asyncio.to_thread(_automl_call, automl.create_dataset, files=files, db_uri=db_uri[:4000],
+                                   db_schema=db_schema[:128], table=table[:200], sqlite_uri=sqlite_uri)
+
+
+@app.get("/api/automl/datasets/{did}")
+async def api_automl_get_dataset(did: str):
+    from features import automl
+    return _automl_call(automl.get_dataset, did)
+
+
+class AutoMLJobRequest(BaseModel):
+    dataset_id: str
+    target: str
+    task: str = "auto"
+    exclude: List[str] = []
+
+
+@app.post("/api/automl/jobs")
+async def api_automl_start(req: AutoMLJobRequest):
+    """Train and compare models for one target column (charged as automl_train, refunded on failure)."""
+    from features import automl
+    return await asyncio.to_thread(_automl_call, automl.start_job, req.dataset_id, req.target[:200],
+                                   req.task, req.exclude[:200])
+
+
+@app.get("/api/automl/jobs")
+async def api_automl_list():
+    from features import automl
+    return automl.list_jobs()
+
+
+@app.get("/api/automl/jobs/{jid}")
+async def api_automl_job(jid: str):
+    from features import automl
+    return _automl_call(automl.get_job, jid)
+
+
+@app.delete("/api/automl/jobs/{jid}")
+async def api_automl_delete(jid: str):
+    from features import automl
+    _automl_call(automl.delete_job, jid)
+    return {"deleted": jid}
+
+
+class AutoMLPredictRequest(BaseModel):
+    row: dict
+
+
+@app.post("/api/automl/jobs/{jid}/predict")
+async def api_automl_predict(jid: str, req: AutoMLPredictRequest):
+    """Score one hand-filled row with the deployed model (free)."""
+    from features import automl
+    return await asyncio.to_thread(_automl_call, automl.predict_row, jid, dict(list(req.row.items())[:200]))
+
+
+# ── Scheduled Delivery ─────────────────────────────────────────────────────────
+
+def _delivery_call(fn, *args, **kwargs):
+    from features import delivery
+    try:
+        return fn(*args, **kwargs)
+    except delivery.DeliveryError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/delivery/options")
+async def api_delivery_options():
+    """Dashboards, reports and decks that can be delivered, and whether email is set up."""
+    from features import delivery
+    return await asyncio.to_thread(delivery.options)
+
+
+@app.get("/api/delivery/schedules")
+async def api_delivery_list():
+    from features import delivery
+    return delivery.list_schedules()
+
+
+@app.post("/api/delivery/schedules")
+async def api_delivery_create(body: dict):
+    from features import delivery
+    return await asyncio.to_thread(_delivery_call, delivery.create_schedule, body)
+
+
+@app.put("/api/delivery/schedules/{sid}")
+async def api_delivery_update(sid: str, body: dict):
+    from features import delivery
+    return await asyncio.to_thread(_delivery_call, delivery.update_schedule, sid, body)
+
+
+@app.delete("/api/delivery/schedules/{sid}")
+async def api_delivery_delete(sid: str):
+    from features import delivery
+    _delivery_call(delivery.delete_schedule, sid)
+    return {"deleted": sid}
+
+
+@app.post("/api/delivery/schedules/{sid}/send")
+async def api_delivery_send(sid: str):
+    """Send it now (also how you test a new schedule). Returns the history entry."""
+    from features import delivery
+    return await asyncio.to_thread(_delivery_call, delivery.send_now, sid)
+
+
 @app.on_event("startup")
 async def _start_background_jobs():
+    from tools import llm_security
+    llm_security.install()          # before any feature can create a Claude client
     _load_saved_tasks()
-    from features import monitor, workflow
+    from features import auto_dashboard, automl, delivery, monitor, workflow
+    auto_dashboard.recover_interrupted()
+    automl.recover_interrupted()
     monitor.start_scheduler()
     workflow.start_scheduler()
+    delivery.start_scheduler()
 
 
 if __name__ == "__main__":

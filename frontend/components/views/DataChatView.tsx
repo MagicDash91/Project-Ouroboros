@@ -19,6 +19,7 @@ import { Followups, GlossaryPanel, OverviewCard } from "../datachat/Extras";
 import { OpenStudio } from "../studio/OpenStudio";
 import { ShareButton } from "../studio/ShareDialog";
 import { AppConnectors } from "../AppConnectors";
+import { QualityReport, type Quality } from "./MetricsView";
 import { ChevronDown, ChevronRight, Send, Upload, X } from "../icons";
 import { Markdown } from "../Markdown";
 import { useLightbox } from "../Overlays";
@@ -747,6 +748,23 @@ export function DataChatView() {
     return () => clearInterval(id);
   }, [sending]);
 
+  const [qBusy, setQBusy] = useState(false);
+  const [qNote, setQNote] = useState("");
+  // One-click data-quality fix: the server rewrites the table and reloads it into the chat's Python.
+  async function fixQuality(fix: Record<string, unknown>) {
+    if (!active) return;
+    setQBusy(true);
+    try {
+      const s = await postJSON<DataChatSession>(`/api/datachat/sessions/${active.id}/quality/fix`, fix);
+      setActive((a) => (a && a.id === s.id ? { ...a, datasets: s.datasets, quality: s.quality, quality_log: s.quality_log } : a));
+      setQNote(`Fixed: ${(s.quality_log || []).slice(-1)[0] || ""}`);
+    } catch (e) {
+      setQNote(errorText(e));
+    } finally {
+      setQBusy(false);
+    }
+  }
+
   async function open(id: string) {
     try {
       setView("chat");
@@ -855,6 +873,18 @@ export function DataChatView() {
             <div className="label mb-1">Source</div>
             <p className="mb-5 break-words text-[12.5px] text-graphite">{active.source.label}</p>
             <DatasetList datasets={active.datasets} extra={active.sql_frames} />
+            {active.quality?.issues && (
+              <details className="mt-5" open={active.quality.issues.length > 0}>
+                <summary className="label cursor-pointer">
+                  Data quality · {active.quality.score}
+                  {active.quality.issues.length ? ` · ${active.quality.issues.length} issue(s)` : " · clean"}
+                </summary>
+                <div className="mt-2">
+                  <QualityReport q={active.quality as Quality} busy={qBusy} onFix={fixQuality} />
+                  {qNote && <p className="mt-2 text-[11.5px] text-graphite">{qNote}</p>}
+                </div>
+              </details>
+            )}
           </div>
         )}
 

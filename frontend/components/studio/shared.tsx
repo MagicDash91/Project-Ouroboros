@@ -1,15 +1,25 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { errorText, getJSON, postJSON, putJSON } from "@/lib/api";
 import { Button, cx } from "../ui";
+import { Inline as RichInline, RichText, ptSize } from "./rich";
 
-/* Shared pieces of the Agent Studio (features/studio.py): types, the load/autosave/AI hook,
-   click-to-edit text with **bold** / *italic*, charts, tables and the AI box. */
+/* Shared pieces of the Studio (features/studio.py): types, the load/autosave/undo/AI hook,
+   word-processor text editing (./rich), charts, tables and the AI box. */
 
 // ── Types (mirror features/studio.py) ───────────────────────────────────────
 
-export type ChartType = "bar" | "line" | "pie";
+export type ChartType = "bar" | "hbar" | "stacked" | "line" | "area" | "pie" | "doughnut";
+export const CHART_TYPES: { key: ChartType; label: string }[] = [
+  { key: "bar", label: "Column" },
+  { key: "hbar", label: "Bar" },
+  { key: "stacked", label: "Stacked" },
+  { key: "line", label: "Line" },
+  { key: "area", label: "Area" },
+  { key: "pie", label: "Pie" },
+  { key: "doughnut", label: "Doughnut" },
+];
 export interface ChartData {
   type: ChartType;
   labels: string[];
@@ -20,7 +30,50 @@ export interface TableData {
   columns: string[];
   rows: string[][];
 }
-export type Layout = "title" | "section" | "bullets" | "two_column" | "chart" | "table" | "quote" | "big_number" | "image";
+/** Paragraph / text-box formatting (sizes in points). */
+export interface TextStyle {
+  font?: string;
+  size?: number;
+  color?: string;
+  bg?: string;
+  align?: "left" | "center" | "right" | "justify";
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+}
+export function styleCss(st?: TextStyle): CSSProperties {
+  if (!st) return {};
+  return {
+    ...(st.font ? { fontFamily: st.font } : {}),
+    ...(st.size ? { fontSize: ptSize(st.size), lineHeight: 1.35 } : {}),
+    ...(st.color ? { color: st.color } : {}),
+    ...(st.bg ? { backgroundColor: st.bg } : {}),
+    ...(st.align ? { textAlign: st.align } : {}),
+    ...(st.bold ? { fontWeight: 600 } : {}),
+    ...(st.italic ? { fontStyle: "italic" } : {}),
+    ...(st.underline ? { textDecorationLine: "underline" } : {}),
+  };
+}
+export type ElementType = "text" | "image" | "table" | "chart" | "shape";
+export type ShapeKind = "rect" | "rounded" | "ellipse" | "line";
+/** A free-floating item on a slide; x / y / w / h are % of the slide. */
+export interface SlideElement {
+  id: string;
+  type: ElementType;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  style: TextStyle;
+  text?: string;
+  image?: string;
+  table?: TableData;
+  chart?: ChartData;
+  shape?: ShapeKind;
+  fill?: string;
+  stroke?: string;
+}
+export type Layout = "title" | "section" | "bullets" | "two_column" | "chart" | "table" | "quote" | "big_number" | "image" | "blank";
 export interface Slide {
   id: string;
   layout: Layout;
@@ -39,8 +92,23 @@ export interface Slide {
   table: TableData | null;
   image: string;
   notes: string;
+  background?: string;
+  elements?: SlideElement[];
+  /** Chart / table / picture slides: what the visual proves, and what to do about it. */
+  conclusion?: string;
+  action?: string;
 }
-export type BlockType = "heading" | "paragraph" | "bullets" | "numbered" | "table" | "chart" | "image" | "quote";
+export type BlockType =
+  | "heading"
+  | "paragraph"
+  | "bullets"
+  | "numbered"
+  | "table"
+  | "chart"
+  | "image"
+  | "quote"
+  | "divider"
+  | "page_break";
 export interface Block {
   id: string;
   type: BlockType;
@@ -51,6 +119,13 @@ export interface Block {
   chart?: ChartData;
   image?: string;
   caption?: string;
+  style?: TextStyle;
+  /** Pictures: width as % of the text column. */
+  width?: number;
+  align?: "left" | "center" | "right";
+  /** Chart / table / picture blocks: what the visual proves, and what to do about it. */
+  conclusion?: string;
+  action?: string;
 }
 interface Meta {
   version: number;
@@ -166,7 +241,13 @@ export function useStudio<T extends Deck | Doc>(prefix: string, kind: T["kind"])
     return saving.current;
   }, [base]);
 
-  const update = useCallback(
+  // Undo / redo of manual edits (typing within 1 s counts as one step), like a word processor.
+  const past = useRef<T[]>([]);
+  const future = useRef<T[]>([]);
+  const lastPush = useRef(0);
+  const [, bump] = useState(0);
+
+  const commit = useCallback(
     (next: T) => {
       latest.current = next;
       setData(next);
@@ -176,6 +257,39 @@ export function useStudio<T extends Deck | Doc>(prefix: string, kind: T["kind"])
     },
     [flush],
   );
+
+  const update = useCallback(
+    (next: T) => {
+      const prev = latest.current;
+      const now = Date.now();
+      if (prev && now - lastPush.current > 1000) {
+        past.current = [...past.current.slice(-49), prev];
+        future.current = [];
+        bump((x) => x + 1);
+      }
+      lastPush.current = now;
+      commit(next);
+    },
+    [commit],
+  );
+
+  const undo = useCallback(() => {
+    const prev = past.current.pop();
+    if (!prev || !latest.current) return;
+    future.current.push(latest.current);
+    lastPush.current = 0;
+    commit({ ...prev, version: latest.current.version });
+    bump((x) => x + 1);
+  }, [commit]);
+
+  const redo = useCallback(() => {
+    const next = future.current.pop();
+    if (!next || !latest.current) return;
+    past.current.push(latest.current);
+    lastPush.current = 0;
+    commit({ ...next, version: latest.current.version });
+    bump((x) => x + 1);
+  }, [commit]);
 
   async function run(label: string, call: () => Promise<T>): Promise<boolean> {
     if (timer.current || saving.current) await flush();
@@ -196,6 +310,9 @@ export function useStudio<T extends Deck | Doc>(prefix: string, kind: T["kind"])
     run("Claude is editing…", () => postJSON<T>(`${base}/ai`, { instruction, target_id: targetId }));
   const restore = (v: number) => run(`Restoring version ${v}…`, () => postJSON<T>(`${base}/restore`, { version: v }));
   const rebuild = () => run("Rebuilding from the agent's report…", () => postJSON<T>(`${base}/rebuild`));
+  /** Conclusion + Actionable insight for the visuals that lack them (`redo`: rewrite all of them). */
+  const explain = (redo = false) =>
+    run("Writing conclusions and actionable insights…", () => postJSON<T>(`${base}/explain${redo ? "?redo=true" : ""}`));
   const versions = useCallback(() => getJSON<Version[]>(`${base}/versions`), [base]);
   const reload = () =>
     getJSON<T>(base)
@@ -219,43 +336,93 @@ export function useStudio<T extends Deck | Doc>(prefix: string, kind: T["kind"])
     return () => window.removeEventListener("beforeunload", warn);
   }, [flush]);
 
-  return { data, update, state, error, setError, busy, ai, restore, rebuild, versions, download, flush, reload };
+  return {
+    data,
+    update,
+    state,
+    error,
+    setError,
+    busy,
+    ai,
+    restore,
+    rebuild,
+    versions,
+    download,
+    flush,
+    reload,
+    undo,
+    redo,
+    explain,
+    canUndo: past.current.length > 0,
+    canRedo: future.current.length > 0,
+  };
 }
 
-// ── Inline **bold** / *italic* ──────────────────────────────────────────────
-
-export function Inline({ text }: { text: string }) {
-  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/g).filter(Boolean);
+/** The Conclusion and Actionable insight every chart / table / picture carries (also in the exports). */
+export function Explanation({
+  conclusion,
+  action,
+  editable,
+  onChange,
+  slide = false,
+}: {
+  conclusion?: string;
+  action?: string;
+  editable: boolean;
+  onChange: (patch: { conclusion?: string; action?: string }) => void;
+  /** On a slide: sizes in container-width units. */
+  slide?: boolean;
+}) {
+  if (!editable && !conclusion && !action) return null;
+  const label = slide ? "text-[1.15cqw]" : "text-[11px]";
+  const text = slide ? "text-[1.2cqw] leading-[1.35]" : "text-[13px] leading-relaxed";
   return (
-    <>
-      {parts.map((p, i) =>
-        p.startsWith("**") && p.endsWith("**") && p.length > 4 ? (
-          <strong key={i} className="font-semibold">
-            {p.slice(2, -2)}
-          </strong>
-        ) : p.startsWith("*") && p.endsWith("*") && p.length > 2 ? (
-          <em key={i}>{p.slice(1, -1)}</em>
-        ) : (
-          <Fragment key={i}>{p}</Fragment>
-        ),
+    <div className={cx("border-l-[3px] border-signal bg-paper/80", slide ? "mt-[0.8cqw] space-y-[0.4cqw] px-[1cqw] py-[0.6cqw]" : "mt-2 space-y-1 px-3 py-2")}>
+      {(
+        [
+          ["conclusion", "Conclusion", conclusion, "What this shows — or use “Explain visuals”"],
+          ["action", "Actionable insight", action, "What to do about it"],
+        ] as const
+      ).map(([key, title, value, ph]) =>
+        editable || value ? (
+          <div key={key} className="flex items-baseline gap-[0.5em]">
+            <span className={cx("shrink-0 font-semibold uppercase tracking-[0.04em] text-signal", label)}>{title}</span>
+            <EditableText
+              value={value ?? ""}
+              editable={editable}
+              placeholder={ph}
+              className={cx("min-w-0 flex-1 text-ink", text)}
+              onChange={(v) => onChange({ [key]: v })}
+            />
+          </div>
+        ) : null,
       )}
-    </>
+    </div>
   );
 }
 
-function wrapSelection(el: HTMLTextAreaElement, mark: string, onChange: (v: string) => void) {
-  const { selectionStart: a, selectionEnd: b, value } = el;
-  if (a === b) return;
-  onChange(value.slice(0, a) + mark + value.slice(a, b) + mark + value.slice(b));
-  requestAnimationFrame(() => el.setSelectionRange(a + mark.length, b + mark.length));
+/** Upload a picture for a deck or document (re-encoded server side); returns its /outputs URL. */
+export async function uploadPicture(file: File): Promise<string> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("/api/studio/upload", { method: "POST", body: form });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body?.detail || `Upload failed (${res.status})`);
+  return body.url as string;
 }
 
-/** Click to edit. Ctrl/⌘+B and Ctrl/⌘+I wrap the selection in ** or *. */
+// ── Text: what-you-see editing (./rich) ─────────────────────────────────────
+
+/** Read-only rendering of formatted marker text. */
+export const Inline = RichInline;
+
+/** Editable formatted text, like a word processor: select text and use the toolbar or Ctrl+B / I / U. */
 export function EditableText({
   value,
   onChange,
   editable = true,
   className,
+  style,
   placeholder = "Click to type",
   single = false,
   onEnter,
@@ -266,72 +433,31 @@ export function EditableText({
   onChange: (v: string) => void;
   editable?: boolean;
   className?: string;
+  style?: CSSProperties;
   placeholder?: string;
   single?: boolean;
   onEnter?: () => void;
   onBackspaceEmpty?: () => void;
   autoFocus?: boolean;
 }) {
-  const [editing, setEditing] = useState(autoFocus);
-  const ref = useRef<HTMLTextAreaElement>(null);
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (el) {
-      el.style.height = "auto";
-      el.style.height = `${el.scrollHeight}px`;
-    }
-  }, [value, editing]);
-
-  if (!editable) return <div className={cx(className, "whitespace-pre-wrap")}>{value ? <Inline text={value} /> : null}</div>;
-
-  if (editing)
+  if (!editable)
     return (
-      <textarea
-        ref={ref}
-        autoFocus
-        rows={1}
-        value={value}
-        placeholder={placeholder}
-        onClick={(e) => e.stopPropagation()}
-        onChange={(e) => onChange(single ? e.target.value.replace(/\n/g, " ") : e.target.value)}
-        onBlur={() => setEditing(false)}
-        onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
-          e.stopPropagation();
-          if ((e.ctrlKey || e.metaKey) && (e.key === "b" || e.key === "i")) {
-            e.preventDefault();
-            wrapSelection(e.currentTarget, e.key === "b" ? "**" : "*", onChange);
-          } else if (e.key === "Escape") {
-            e.currentTarget.blur();
-          } else if (e.key === "Enter" && !e.shiftKey && (single || onEnter)) {
-            e.preventDefault();
-            e.currentTarget.blur();
-            onEnter?.();
-          } else if (e.key === "Backspace" && !value && onBackspaceEmpty) {
-            e.preventDefault();
-            onBackspaceEmpty();
-          }
-        }}
-        className={cx(
-          className,
-          "block w-full resize-none overflow-hidden rounded-[2px] bg-white/70 outline outline-1 outline-signal/60 placeholder:text-mute/50",
-        )}
-      />
+      <div className={cx(className, "whitespace-pre-wrap break-words")} style={style}>
+        {value ? <Inline text={value} /> : null}
+      </div>
     );
-
   return (
-    <div
-      role="textbox"
-      tabIndex={0}
-      onClick={(e) => {
-        e.stopPropagation();
-        setEditing(true);
-      }}
-      onFocus={() => setEditing(true)}
-      className={cx(className, "cursor-text whitespace-pre-wrap rounded-[2px] hover:outline hover:outline-1 hover:outline-signal/30")}
-    >
-      {value ? <Inline text={value} /> : <span className="opacity-40">{placeholder}</span>}
-    </div>
+    <RichText
+      value={value}
+      onChange={onChange}
+      className={className}
+      style={style}
+      placeholder={placeholder}
+      single={single}
+      onEnter={onEnter}
+      onBackspaceEmpty={onBackspaceEmpty}
+      autoFocus={autoFocus}
+    />
   );
 }
 
@@ -343,6 +469,7 @@ export function EditableList({
   className,
   marker,
   itemClass,
+  style,
 }: {
   items: string[];
   onChange: (v: string[]) => void;
@@ -350,10 +477,11 @@ export function EditableList({
   className?: string;
   marker: (i: number) => ReactNode;
   itemClass?: string;
+  style?: CSSProperties;
 }) {
   const [focus, setFocus] = useState<number | null>(null);
   return (
-    <ul className={className}>
+    <ul className={className} style={style}>
       {items.map((it, i) => (
         <li key={i} className="flex items-baseline gap-[0.6em]">
           <span className="shrink-0">{marker(i)}</span>
@@ -419,7 +547,7 @@ export function MiniChart({ chart }: { chart: ChartData }) {
   const n = chart.labels.length;
   if (!n) return <div className="grid h-full place-items-center text-[0.8em] text-mute">Add data to draw the chart</div>;
 
-  if (chart.type === "pie") {
+  if (chart.type === "pie" || chart.type === "doughnut") {
     const vals = (chart.series[0]?.values ?? []).map((v) => Math.max(0, v ?? 0));
     const total = vals.reduce((a, b) => a + b, 0) || 1;
     const cx0 = 160,
@@ -438,6 +566,7 @@ export function MiniChart({ chart }: { chart: ChartData }) {
               : `M ${cx0} ${cy0} L ${cx0 + r * Math.cos(a0)} ${cy0 + r * Math.sin(a0)} A ${r} ${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${cx0 + r * Math.cos(a1)} ${cy0 + r * Math.sin(a1)} Z`;
           return v > 0 ? <path key={i} d={d} fill={SERIES_COLORS[i % SERIES_COLORS.length]} stroke="#fff" strokeWidth={2} /> : null;
         })}
+        {chart.type === "doughnut" && <circle cx={cx0} cy={cy0} r={r * 0.55} fill="#fff" />}
         {chart.labels.map((l, i) => (
           <g key={i} transform={`translate(320 ${44 + i * 26})`}>
             <rect width={12} height={12} y={-10} fill={SERIES_COLORS[i % SERIES_COLORS.length]} />
@@ -450,9 +579,51 @@ export function MiniChart({ chart }: { chart: ChartData }) {
     );
   }
 
-  const all = chart.series.flatMap((s) => s.values.filter((v): v is number => v != null));
+  if (chart.type === "hbar") {
+    const all = chart.series.flatMap((s) => s.values.filter((v): v is number => v != null));
+    const max = niceMax(Math.max(0, ...all));
+    const LL = 130;
+    const band = (H - 18 - 26) / n;
+    const x = (v: number) => LL + ((W - LL - R) * Math.max(0, v)) / max;
+    const hgt = (band * 0.7) / chart.series.length;
+    return (
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-full w-full">
+        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+          <g key={f}>
+            <line x1={x(max * f)} x2={x(max * f)} y1={14} y2={H - 26} stroke={grid} />
+            <text x={x(max * f)} y={H - 10} fontSize={11} textAnchor="middle" fill={ink}>
+              {fmtTick(max * f)}
+            </text>
+          </g>
+        ))}
+        {chart.labels.map((l, i) => (
+          <text key={i} x={LL - 6} y={18 + band * (i + 0.5) + 4} fontSize={n > 10 ? 9 : 11} textAnchor="end" fill={ink}>
+            {l.length > 20 ? `${l.slice(0, 19)}…` : l}
+          </text>
+        ))}
+        {chart.series.map((s, k) =>
+          s.values.map((v, i) =>
+            v == null ? null : (
+              <rect
+                key={`${k}-${i}`}
+                x={LL}
+                y={18 + band * i + band * 0.15 + k * hgt}
+                width={Math.max(1, x(v) - LL)}
+                height={Math.max(1, hgt - 2)}
+                fill={SERIES_COLORS[k % SERIES_COLORS.length]}
+              />
+            ),
+          ),
+        )}
+      </svg>
+    );
+  }
+
+  const stacked = chart.type === "stacked";
+  const totals = chart.labels.map((_, i) => chart.series.reduce((a, s) => a + Math.max(0, s.values[i] ?? 0), 0));
+  const all = stacked ? totals : chart.series.flatMap((s) => s.values.filter((v): v is number => v != null));
   const max = niceMax(Math.max(0, ...all));
-  const min = Math.min(0, ...all);
+  const min = stacked ? 0 : Math.min(0, ...all);
   const y = (v: number) => T + (H - T - B) * (1 - (v - min) / (max - min || 1));
   const band = (W - L - R) / n;
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => min + (max - min) * f);
@@ -471,7 +642,26 @@ export function MiniChart({ chart }: { chart: ChartData }) {
           {l.length > 18 ? `${l.slice(0, 17)}…` : l}
         </text>
       ))}
-      {chart.type === "bar"
+      {stacked
+        ? chart.labels.map((_, i) => {
+            let acc = 0;
+            return chart.series.map((s, k) => {
+              const v = Math.max(0, s.values[i] ?? 0);
+              const y0 = y(acc);
+              acc += v;
+              return v ? (
+                <rect
+                  key={`${k}-${i}`}
+                  x={L + band * i + band * 0.15}
+                  y={y(acc)}
+                  width={Math.max(1, band * 0.7)}
+                  height={Math.max(0, y0 - y(acc))}
+                  fill={SERIES_COLORS[k % SERIES_COLORS.length]}
+                />
+              ) : null;
+            });
+          })
+        : chart.type === "bar"
         ? chart.series.map((s, k) => {
             const w = (band * 0.7) / chart.series.length;
             return s.values.map((v, i) =>
@@ -489,6 +679,17 @@ export function MiniChart({ chart }: { chart: ChartData }) {
           })
         : chart.series.map((s, k) => (
             <g key={k}>
+              {chart.type === "area" && (
+                <polygon
+                  fill={SERIES_COLORS[k % SERIES_COLORS.length]}
+                  fillOpacity={0.22}
+                  points={[
+                    `${L + band * 0.5},${y(Math.max(min, 0))}`,
+                    ...s.values.map((v, i) => `${L + band * (i + 0.5)},${y(v ?? 0)}`),
+                    `${L + band * (n - 0.5)},${y(Math.max(min, 0))}`,
+                  ].join(" ")}
+                />
+              )}
               <polyline
                 fill="none"
                 stroke={SERIES_COLORS[k % SERIES_COLORS.length]}
@@ -533,18 +734,20 @@ export function ChartEditor({ chart, onChange }: { chart: ChartData; onChange: (
   };
   return (
     <div className="space-y-2">
-      <div className="flex gap-1">
-        {(["bar", "line", "pie"] as const).map((t) => (
+      <div className="grid grid-cols-4 gap-1">
+        {CHART_TYPES.map(({ key: t, label }) => (
           <button
             key={t}
             type="button"
-            onClick={() => onChange({ ...chart, type: t, series: t === "pie" ? chart.series.slice(0, 1) : chart.series })}
+            onClick={() =>
+              onChange({ ...chart, type: t, series: t === "pie" || t === "doughnut" ? chart.series.slice(0, 1) : chart.series })
+            }
             className={cx(
-              "flex-1 border px-2 py-1 text-[11.5px] capitalize",
+              "border px-1 py-1 text-[11px]",
               chart.type === t ? "border-ink bg-ink text-paper" : "border-rule hover:border-ink",
             )}
           >
-            {t}
+            {label}
           </button>
         ))}
       </div>
@@ -641,7 +844,7 @@ export function ChartEditor({ chart, onChange }: { chart: ChartData; onChange: (
         >
           + Row
         </button>
-        {chart.type !== "pie" && chart.series.length < 6 && (
+        {chart.type !== "pie" && chart.type !== "doughnut" && chart.series.length < 6 && (
           <button
             type="button"
             onClick={() => onChange({ ...chart, series: [...chart.series, { name: "", values: chart.labels.map(() => null) }] })}

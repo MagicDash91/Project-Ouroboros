@@ -39,3 +39,6 @@ Thumbs.db
 
 # ── Licensing: hero.jpg is a copyrighted painting kept for local preview only ──
 frontend/public/art/hero.jpg
+
+# ── Design-tool scratch files ─────────────────────────────────────────
+frontend/.taste-skill/

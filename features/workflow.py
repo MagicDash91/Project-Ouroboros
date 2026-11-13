@@ -59,8 +59,10 @@ def _f(key, label, kind="text", **kw):
 CATALOG = [
     # Sources
     {"type": "upload", "category": "source", "label": "File", "inputs": 0,
-     "description": "Load an uploaded CSV, Excel, Parquet or JSON file.",
-     "fields": [_f("file", "File", "file", required=True)]},
+     "description": "Load an uploaded CSV, Excel, Parquet or JSON file. For an Excel workbook, pick the sheet "
+                    "(each sheet is its own table; use one File step per sheet and join them).",
+     "fields": [_f("file", "File", "file", required=True),
+                _f("sheet", "Sheet (Excel only; empty = the main data sheet)", "text")]},
     {"type": "database", "category": "source", "label": "Database query", "inputs": 0,
      "description": "Run one read-only SELECT on any database (Postgres, Supabase, MySQL, SQL Server, BigQuery…).",
      "fields": [_f("db_uri", "Connection string", "secret", required=True),
@@ -78,7 +80,8 @@ CATALOG = [
                    help="Sheet / file / database / table link, a Slack #channel, or a direct file URL"),
                 _f("token", "Token (Slack, Notion, Airtable)", "secret",
                    placeholder="Empty = the server's SLACK_BOT_TOKEN / NOTION_TOKEN / AIRTABLE_TOKEN"),
-                _f("days", "Slack: days of history", "number", default=30, min=1, max=365)]},
+                _f("days", "Slack: days of history", "number", default=30, min=1, max=365),
+                _f("sheet", "Sheet (Excel files only; empty = the main data sheet)", "text")]},
     {"type": "agent", "category": "ai", "label": "Agent task", "inputs": 1, "optional_input": True,
      "description": "Run the autonomous Agent on a goal (browses, researches, writes). Upstream data is given as context.",
      "fields": [_f("goal", "Goal", "textarea", required=True)]},
@@ -405,7 +408,7 @@ def _validate(nodes: list, edges: list, old: dict):
 
 # ── Files ─────────────────────────────────────────────────────────────────────
 
-_FORMATS = {".csv": "csv", ".txt": "csv", ".tsv": "tsv", ".xlsx": "xlsx", ".xls": "xls", ".parquet": "parquet",
+_FORMATS = {".csv": "csv", ".txt": "csv", ".tsv": "tsv", ".xlsx": "xlsx", ".xlsm": "xlsx", ".xls": "xls", ".parquet": "parquet",
             ".json": "json", ".jsonl": "jsonl"}
 MAX_FILE_MB = 200
 
@@ -427,11 +430,28 @@ def add_file(wid: str, name: str, data: bytes) -> dict:
         (d / safe).unlink(missing_ok=True)
         raise WorkflowError(f"{name} couldn't be read: {str(e).splitlines()[0][:200]}")
     info = {"name": safe, "rows": len(df), "columns": [str(c) for c in df.columns]}
+    entry = {"rows": info["rows"], "columns": info["columns"], "size": len(data)}
+    entry.update(_excel_meta(d / safe))                    # Excel: every sheet + Claude's guide to the workbook
+    info["sheets"] = entry.get("sheets", [])
     with _lock:
         meta = _files_meta(wid)
-        meta[safe] = {"rows": info["rows"], "columns": info["columns"], "size": len(data)}
+        meta[safe] = entry
         (_path(wid) / "files.json").write_text(json.dumps(meta), encoding="utf-8")
     return info
+
+
+def _excel_meta(p: Path) -> dict:
+    """{sheets: [{sheet, rows, columns}], guide} for an Excel file; {} for anything else or if it can't be read."""
+    from tools import excel_reader
+    if not excel_reader.is_excel(p.name):
+        return {}
+    try:
+        u = excel_reader.understand(p, p.name)
+        return {"sheets": [{"sheet": s["sheet"], "rows": s["rows"], "columns": s["columns"][:60]}
+                           for s in u["sheets"] if s["kind"] == "table"],
+                "guide": u["guide"]}
+    except Exception:
+        return {}
 
 
 def _files_meta(wid: str) -> dict:
@@ -448,20 +468,27 @@ def list_files(wid: str) -> list:
     if not d.exists():
         return []
     meta, out, changed = _files_meta(wid), [], False
+    from tools import excel_reader
     for p in sorted(d.iterdir()):
         if p.name not in meta:
             try:
                 meta[p.name] = {"columns": [str(c) for c in _read_file(p, nrows=5).columns], "size": p.stat().st_size}
+                meta[p.name].update(_excel_meta(p))         # every sheet, plus Claude's guide to the workbook
             except Exception:
                 meta[p.name] = {"columns": [], "size": p.stat().st_size}
             changed = True
-        out.append({"name": p.name, "size": p.stat().st_size, "columns": meta[p.name].get("columns", [])})
+        elif excel_reader.is_excel(p.name) and "guide" not in meta[p.name]:
+            meta[p.name].update(_excel_meta(p))             # uploaded before sheets/guide were recorded
+            meta[p.name].setdefault("guide", "")
+            changed = True
+        out.append({"name": p.name, "size": p.stat().st_size, "columns": meta[p.name].get("columns", []),
+                    "sheets": meta[p.name].get("sheets", []), "guide": meta[p.name].get("guide", "")})
     if changed:
         (_path(wid) / "files.json").write_text(json.dumps(meta), encoding="utf-8")
     return out
 
 
-def _read_file(p: Path, nrows=None):
+def _read_file(p: Path, nrows=None, sheet: str = ""):
     import pandas as pd
     fmt = _FORMATS.get(p.suffix.lower())
     if fmt == "csv":
@@ -469,7 +496,18 @@ def _read_file(p: Path, nrows=None):
     if fmt == "tsv":
         return pd.read_csv(p, nrows=nrows, sep="\t")
     if fmt in ("xlsx", "xls"):
-        return pd.read_excel(p, nrows=nrows)
+        # Header row detected, total rows removed, numbers-as-text fixed (tools/excel_reader.py).
+        from tools import excel_reader
+        sheets = excel_reader.tables(excel_reader.read_workbook(p))
+        if not sheets:
+            raise WorkflowError(f"{p.name} has no sheet with a data table")
+        if sheet:
+            pick = next((s for s in sheets if s["sheet"].strip().lower() == str(sheet).strip().lower()), None)
+            if pick is None:
+                raise WorkflowError(f"{p.name} has no sheet '{sheet}' (sheets: {', '.join(s['sheet'] for s in sheets)})")
+        else:
+            pick = max(sheets, key=lambda s: s["df"].size)
+        return pick["df"].head(nrows) if nrows else pick["df"]
     if fmt == "parquet":
         df = pd.read_parquet(p)
         return df.head(nrows) if nrows else df
@@ -667,7 +705,7 @@ def _run_node(node: dict, inputs: list, ctx: dict) -> dict:
         p = ctx["files"] / Path(name).name
         if not p.is_file():
             raise WorkflowError(f"the file {name} isn't uploaded to this workflow")
-        return {"df": _read_file(p)}
+        return {"df": _read_file(p, sheet=str(c.get("sheet") or ""))}
 
     if t == "database":
         return {"df": _read_sql(c.get("db_uri", ""), c.get("schema", ""), c.get("sql", ""))}
@@ -1125,10 +1163,28 @@ def _app_import(c, inputs, ctx):
     except connectors.ConnectorError as e:
         raise WorkflowError(str(e))
     ext = Path(name).suffix.lower()
-    if ext not in (".csv", ".xlsx", ".xls"):
+    if ext not in (".csv", ".xlsx", ".xlsm", ".xls"):
         raise WorkflowError(f"{name} is a document; workflows need a table")
-    df = pd.read_csv(io.BytesIO(data)) if ext == ".csv" else pd.read_excel(io.BytesIO(data))
-    return {"df": df, "text": f"Imported {name} ({len(df):,} rows) from {connectors.CONNECTORS[key]['name']}."}
+    src = connectors.CONNECTORS[key]["name"]
+    if ext == ".csv":
+        df = pd.read_csv(io.BytesIO(data))
+        return {"df": df, "text": f"Imported {name} ({len(df):,} rows) from {src}."}
+    # Excel: every sheet is read (header row found, totals dropped, text numbers fixed); the step passes on the
+    # sheet named in "Sheet", else the biggest data sheet, and says which other sheets exist.
+    from tools import excel_reader
+    sheets = excel_reader.tables(excel_reader.read_workbook(data))
+    if not sheets:
+        raise WorkflowError(f"{name} has no sheet with a data table")
+    want = str(c.get("sheet") or "").strip().lower()
+    pick = next((s for s in sheets if s["sheet"].strip().lower() == want), None) if want else None
+    if want and pick is None:
+        raise WorkflowError(f"{name} has no sheet '{c.get('sheet')}' (sheets: {', '.join(s['sheet'] for s in sheets)})")
+    pick = pick or max(sheets, key=lambda s: s["df"].size)
+    others = [f"{s['sheet']} ({len(s['df']):,} rows)" for s in sheets if s is not pick]
+    text = f"Imported sheet '{pick['sheet']}' of {name} ({len(pick['df']):,} rows) from {src}."
+    if others:
+        text += " Other sheets: " + ", ".join(others) + ". Add another App data step with Sheet set to use one."
+    return {"df": pick["df"], "text": text}
 
 
 def _rename(c, inputs, ctx):
@@ -1652,8 +1708,15 @@ def generate(prompt: str, wid: str = "") -> dict:
                                  for n in w["nodes"]],
                        "edges": [{"from": e["source"], "to": e["target"],
                                   **({"handle": e["targetHandle"]} if e.get("targetHandle") else {})} for e in w["edges"]]}
-    data_note = ("Files uploaded to this workflow (use the exact file name and column names):\n" +
-                 "\n".join(f"- {f['name']}: columns {', '.join(f['columns'][:40])}" for f in files)) if files else \
+    def _file_line(f):
+        if len(f.get("sheets") or []) > 1:                # Excel: every sheet, and how they fit together
+            return (f"- {f['name']} (Excel, {len(f['sheets'])} sheets; set the upload node's `sheet`):\n" +
+                    "\n".join(f"    sheet '{s['sheet']}' ({s['rows']} rows): columns {', '.join(s['columns'][:30])}"
+                              for s in f["sheets"]) + (f"\n{f['guide']}" if f.get("guide") else ""))
+        return f"- {f['name']}: columns {', '.join(f['columns'][:40])}" + (f"\n{f['guide']}" if f.get("guide") else "")
+    data_note = ("Files uploaded to this workflow (use the exact file, sheet and column names; for a multi-sheet "
+                 "workbook use one upload node per sheet you need and join them on the keys the guide names):\n" +
+                 "\n".join(_file_line(f) for f in files)) if files else \
         "No files are uploaded yet. If the user's data is a file, add an 'upload' node and leave its file empty."
     system = f"""You design data workflows for Universal Analytics, a visual automation canvas (like n8n).
 Build the smallest workflow that fully does what the user asks, using ONLY these node types:
@@ -1670,6 +1733,8 @@ Rules:
 - Only add a schedule if the user asked for something recurring ("every Monday", "daily").
 - Labels are short (2-4 words). Keys are short (n1, n2, ...).
 {"- You are EDITING the current workflow below: keep what still fits, change what the user asked, keep existing keys." if current else ""}"""
+    from features.metrics import prompt_text
+    data_note += prompt_text()
     user = f"Request: {prompt}\n\n{data_note}" + (f"\n\nCurrent workflow:\n{json.dumps(current, default=str)[:12000]}" if current else "")
     if anthropic_client is None:
         raise LLMUnavailableError("ANTHROPIC_API_KEY is not set")

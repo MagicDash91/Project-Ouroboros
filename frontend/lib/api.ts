@@ -6,6 +6,10 @@ export const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localh
 export class ApiError extends Error {}
 
 async function parse<T>(res: Response): Promise<T> {
+  // The session ended (logged out elsewhere or expired): back to the log-in page, then here again.
+  if (res.status === 401 && typeof window !== "undefined" && window.location.pathname.startsWith("/app")) {
+    window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+  }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
     try {

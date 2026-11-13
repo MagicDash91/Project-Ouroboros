@@ -22,6 +22,7 @@ import {
 } from "@xyflow/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppConnectors } from "@/components/AppConnectors";
+import { OpenStudio } from "@/components/studio/OpenStudio";
 import { Markdown } from "@/components/Markdown";
 import { onIntent } from "@/lib/intent";
 import { useToast } from "@/components/Overlays";
@@ -379,7 +380,7 @@ function FieldInput({
             <input
               type="file"
               className="hidden"
-              accept=".csv,.tsv,.txt,.xlsx,.xls,.parquet,.json,.jsonl"
+              accept=".csv,.tsv,.txt,.xlsx,.xlsm,.xls,.parquet,.json,.jsonl"
               onChange={async (e) => {
                 const file = e.target.files?.[0];
                 const input = e.target;
@@ -426,7 +427,7 @@ function FieldInput({
   }
 }
 
-function Output({ r }: { r?: NodeResult }) {
+function Output({ r, studio }: { r?: NodeResult; studio?: string }) {
   if (!r) return <p className="text-[12.5px] italic text-mute">Run the workflow to see this step&apos;s output.</p>;
   return (
     <div className="space-y-4">
@@ -467,6 +468,9 @@ function Output({ r }: { r?: NodeResult }) {
             </a>
           ))}
         </div>
+      )}
+      {studio && r.status === "done" && r.files?.some((f) => f.kind === "md") && (
+        <OpenStudio prefix={studio} label="Edit the report" note="Edit like PowerPoint or Word: format text, add tables, pictures and charts; export .pptx / .docx / PDF." />
       )}
       {r.charts?.map((c) => (
         <Chart key={c.url} url={c.url} kind={c.kind} />
@@ -1058,7 +1062,7 @@ function Editor({
                     )}
                   </div>
                 ) : (
-                  <Output r={run?.nodes[sel.id]} />
+                  <Output r={run?.nodes[sel.id]} studio={run && selSpec?.type === "report" ? `/api/workflows/${wf.id}/runs/${run.id}/nodes/${sel.id}/studio` : undefined} />
                 )}
               </div>
             </div>
@@ -1084,7 +1088,7 @@ function Editor({
                 <input
                   type="file"
                   className="hidden"
-                  accept=".csv,.tsv,.txt,.xlsx,.xls,.parquet,.json,.jsonl"
+                  accept=".csv,.tsv,.txt,.xlsx,.xlsm,.xls,.parquet,.json,.jsonl"
                   onChange={(e) => {
                     const input = e.target;
                     if (input.files?.[0]) upload(input.files[0]).then(() => (input.value = ""));

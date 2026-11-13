@@ -1,8 +1,8 @@
 # Ouroboros
 
-**An analytics and marketing desk staffed by AI agents.** Point it at any database, file or app (Google Sheets, Drive, Slack, Notion, Airtable) and it engineers the data with **dbt**, models it, builds a **Power BI-style dashboard**, writes the report and drafts the **marketing campaign** — with you approving the plan. Next to that full pipeline sit **Data chat** for quick questions, an autonomous **Agent** that browses the web and does open-ended research, and **Workflow** for repeatable, scheduled automations. Every report the desk writes opens as an **editable, presentable deck and Word document**.
+**An analytics and marketing desk staffed by AI agents.** Point it at any database, file or app (Google Sheets, Drive, Slack, Notion, Airtable) and it engineers the data with **dbt**, models it, builds a **Power BI-style dashboard**, writes the report and drafts the **marketing campaign** — with you approving the plan. Next to that full pipeline sit **Boards** (automatic dashboards with a chat), **Metrics** (one definition of every business metric, plus data-quality checks), **Data chat** for quick questions, an autonomous **Agent** that browses the web and does open-ended research, **AutoML** that trains, explains and deploys a prediction model for any column, **Workflow** for repeatable, scheduled automations, and **Deliver** for sending dashboards, reports and decks on a schedule. Every report the desk writes opens as an **editable, presentable deck and Word document**.
 
-Everything runs on **Claude Haiku 5.5**, with **LangGraph** and **CrewAI** for the agent teams, **FastMCP** for safe tool access, **dbt + Apache Airflow** for data engineering, **Playwright** for browsing, and a **Next.js** web app.
+Everything runs on **Claude Haiku 5.5** behind one security checkpoint, with **LangGraph** and **CrewAI** for the agent teams, **FastMCP** for safe tool access, **dbt + Apache Airflow** for data engineering, **scikit-learn, XGBoost and LightGBM** for machine learning, **Playwright** for browsing, and a **Next.js** web app with user accounts.
 
 It isn't tied to one industry or dataset: the agents, charts and dashboards adapt to whatever is connected — retail sales, churn, fraud, credit risk, documents, or no data at all.
 
@@ -20,42 +20,48 @@ It isn't tied to one industry or dataset: the agents, charts and dashboards adap
 5. [Data chat](#data-chat)
 6. [Agent: autonomous tasks](#agent-autonomous-tasks)
 7. [Workflow: automations on a canvas](#workflow-automations-on-a-canvas)
-8. [Studio: editable decks and documents](#studio-editable-decks-and-documents)
-9. [Pricing & credits](#pricing--credits)
-10. [Security model](#security-model)
-11. [Connecting a database](#connecting-a-database)
-12. [Connecting apps](#connecting-apps)
-13. [Tech stack](#tech-stack)
-14. [Installation & running](#installation--running)
-15. [Environment variables](#environment-variables)
-16. [API reference](#api-reference)
-17. [Project structure](#project-structure)
-18. [Known limitations](#known-limitations)
-19. [Architecture poster brief](#architecture-poster-brief)
+8. [Boards: automatic dashboards](#boards-automatic-dashboards)
+9. [Metrics & data quality](#metrics--data-quality)
+10. [AutoML: predict any column](#automl-predict-any-column)
+11. [Scheduled delivery](#scheduled-delivery)
+12. [Studio: editable decks and documents](#studio-editable-decks-and-documents)
+13. [Accounts](#accounts)
+14. [Pricing & credits](#pricing--credits)
+15. [Security model](#security-model)
+16. [Connecting a database](#connecting-a-database)
+17. [Connecting apps](#connecting-apps)
+18. [Tech stack](#tech-stack)
+19. [Installation & running](#installation--running)
+20. [Environment variables](#environment-variables)
+21. [API reference](#api-reference)
+22. [Project structure](#project-structure)
+23. [Known limitations](#known-limitations)
+24. [Architecture poster brief](#architecture-poster-brief)
 
 ---
 
 ## The apps
 
-![Home page](static/o1.JPG)
-<sub>The Home page: the brief in one sentence, then Start here.</sub>
+![Landing page](static/o1.JPG)
+<sub>The public landing page at <code>/</code>: the brief in one sentence. The desk itself is at <code>/app</code>, behind sign-in.</sub>
 
-<table><tr>
-<td width="50%"><img src="static/o2.JPG" alt="Start here with industry kits"><br><sub>Home → Start here: pick an industry kit and try every app on a fictional company.</sub></td>
-<td width="50%"><img src="static/o4.JPG" alt="Four ways to work"><br><sub>The four apps: Analytics, Data chat, Agent and Workflow, with their credit cost.</sub></td>
-</tr></table>
+![Ways to work](static/o4.JPG)
+<sub>Ways to work: Analytics, Data chat, Agent and Workflow, with their credit cost.</sub>
 
-The left rail switches between seven apps that share one backend:
+The landing page explains what the desk does, the end-to-end chain, a feature comparison with other tools and pricing. Inside the desk, the left rail switches between ten apps that share one backend:
 
 | App | Use it when | You get |
 |---|---|---|
-| **Home** | First visit | What the desk does, the end-to-end chain, a feature comparison with other tools, pricing |
 | **Analytics** | You want a full analysis of a dataset | Approved plan → dbt models + tests → forecasts / segments / classifiers → AI-written charts → automatic dashboard → PDF + PowerPoint report → marketing campaign; the report and campaign open as editable decks and Word documents with the run's charts |
 | **Data chat** | You have a quick question about a file, database or app | A data overview with suggested questions, then short answers with the SQL / Python behind them, tables, charts and follow-up questions; a shared business glossary; Excel / CSV / PNG downloads; a pinboard; turn the chat into a deck or report |
 | **Agent** | The task needs the web, or several sources | A plan you approve, then autonomous browsing, research (in parallel), analysis, and an answer with a conclusion and prioritised recommendations, plus a report, deck or spreadsheet you can edit and present |
+| **Boards** | You want a dashboard from files or a database | KPIs, charts and filters designed by Claude, a chat that answers questions about the board or edits it (every edit a version), exports to PowerPoint and Excel |
+| **Metrics** | You want one definition of "revenue" everywhere, or to check a file | Business metric definitions injected into every app, and a data-quality check with one-click fixes |
+| **AutoML** | You want to predict a column (churn, default, revenue…) | Up to six algorithms compared against a baseline, the winner tested on unseen rows, drivers and leakage warnings in plain language, a deployed model and a "try a prediction" form |
 | **Workflow** | You want a repeatable automation | An n8n-style canvas of 32 steps (sources incl. live app data → transforms → quality & logic → ML → AI → outputs incl. Slack / Teams alerts), built by hand or from a prompt, run once or on a schedule |
+| **Deliver** | People need a dashboard, report or deck regularly | Daily / weekly / monthly delivery by email, Slack, Teams or webhook; boards are refreshed and show each KPI's change since the last send |
 | **Pricing** | Checking your balance, plan or buying credits | Credit balance by bucket, plans, rate card, top-ups, spending controls, activity history |
-| **Docs** | Learning how to use or run it | In-app guide: running locally, each app, connecting databases, security, API, limits |
+| **Docs** | Learning how to use or run it | In-app guide: running locally, accounts, every app, connecting databases and apps, security, pricing, API, limits |
 
 ---
 
@@ -93,7 +99,7 @@ Most tools cover one or two steps; this desk covers the chain from data engineer
 
 ```mermaid
 flowchart LR
-    U([User]) --> FE[Next.js web app<br/>Home · Analytics · Data chat · Agent · Workflow · Pricing · Docs]
+    U([User]) --> FE[Next.js web app · sign-in<br/>Analytics · Boards · Metrics · Data chat · Agent<br/>AutoML · Workflow · Deliver · Pricing · Docs]
     FE <-->|REST + SSE + polling| API[FastAPI backend :8002]
 
     subgraph DATA[Data layer]
@@ -113,6 +119,9 @@ flowchart LR
         MCP[Read-only FastMCP server<br/>describe_data · run_sql · run_python]
         SBX[Sandboxed Python kernel]
         GUARD[LLM guard: PII masking ·<br/>injection screening · output sanitising]
+        CHK[Claude checkpoint: secret redaction ·<br/>rate limits · audit — every call]
+        URLG[SSRF guard: public https only]
+        DBS[DB safety: real tables only ·<br/>never overwrite user tables]
     end
 
     subgraph AG[Agent]
@@ -132,6 +141,13 @@ flowchart LR
     MCP --> SBX
     MCP --> GUARD
     API --> BILL[(Credit wallet)]
+    API --> BRD[Boards: explore → design → repair → insights]
+    API --> AML[AutoML: compare 6 models → holdout →<br/>drivers → explain → deploy]
+    API --> DLV[Deliver: scheduler → email / Slack / Teams / webhook]
+    CA --> DBS
+    AML --> DBS
+    DLV --> URLG
+    AML --> MODELS[(Deployed models · /api/predict)]
 
     CA --> OUT[Dashboard · charts · PDF / PPTX · knowledge graph]
     CM --> OUT
@@ -336,6 +352,69 @@ Example: *every morning → App data (Google Sheet) → Data quality check → C
 
 ---
 
+## Boards: automatic dashboards
+
+A GoArif-style dashboard builder (`features/auto_dashboard.py`, `frontend/components/views/AutoDashboardView.tsx`). Give it files, a database, app imports or a mix, plus an optional goal:
+
+1. **Explore:** up to 5 small read-only queries check coverage, splits and joins.
+2. **Design:** KPIs, charts and filters (category or date range), each backed by one query; with both files and a database it may import aggregated database results to join them.
+3. **Repair:** one call for queries that failed; what still fails is left out.
+4. **Explain:** an executive summary and one insight per chart.
+
+After that, **filtering, re-ordering, renaming, changing chart types, refreshing and exporting (PowerPoint, Excel) need no AI call**. The built-in **chat** answers questions from what is on screen (up to 3 extra queries) or edits the board; every edit is a new version, so it can be undone. Uploads get the data-quality check first. Building costs 20 credits (refunded if it fails), a chat message 3.
+
+**Security:** every query passes the SQL guard (one `SELECT`, only the board's own tables, no secret columns); files are queried through a read-only SQLite connection with a time limit, databases inside a `READ ONLY` transaction; filter values must be known options or `YYYY-MM-DD` dates and are bound as literals; schema, samples and results are fenced as untrusted data with personal-data columns masked; local-file database URIs are refused and the URI is never returned. Storage: `data/autodash/<id>/` (never under `outputs/`).
+
+---
+
+## Metrics & data quality
+
+**Metric definitions — the semantic layer** (`features/metrics.py`, *Metrics* app). A metric has a name, aliases (*omzet*, *penjualan bersih*), one SQL aggregate (`SUM(net_revenue)`, `COUNT(DISTINCT customer_id)`), an optional filter (`status = 'paid'`) and a format (number, currency, percent). The definitions are injected into Data chat, the Agent, Boards, Analytics runs and the Workflow builder, so "revenue" means the same thing everywhere. **Test** a definition on a table, or let **Suggest** propose definitions from the columns. Expressions and filters are validated by the SQL guard inside `SELECT <expr> FROM t WHERE <filter>` and fenced as data in prompts. Stored in `data/metrics/metrics.json`.
+
+**Data quality** (`tools/data_quality.py`, run on every upload and on demand in the *Metrics* app): a score plus issues with severity and one-click, deterministic pandas fixes — duplicate rows and IDs, missing values, impossible values (negative amounts or ages, percent > 100, future dates), extreme outliers (3×IQR), inconsistent spellings, gaps in date series and broken joins between tables. Fixes: drop duplicates, dedupe by key, tidy categories, blank or fill missing values (median, mode, zero), drop rows, cap outliers; download the cleaned file afterwards.
+
+---
+
+## AutoML: predict any column
+
+`features/automl.py`, `frontend/components/views/AutoMLView.tsx`. Pick a column to predict; the desk trains and compares several models, explains the winner and deploys it.
+
+![AutoML churn model](static/o32.JPG)
+<sub>AutoML on 7,043 telecom customers: six algorithms against a baseline (logistic regression wins, ROC AUC 0.846), the held-out check (78% of churners found, 51% of flags correct) and what to do with it, in plain language.</sub>
+
+1. **Data:** a file (CSV, Excel — every sheet read properly —, Parquet, Feather, JSON), an upload already in the workspace, or a database table read through `tools/db_safety.read_only_query` (parser-checked `SELECT`, `READ ONLY` transaction). Up to 200,000 rows; free.
+2. **Target and exclusions:** suggested targets first; *Decide for me*, *A category* or *A number*; leave out columns only known after the outcome.
+3. **Column roles:** identifiers, constants and free text are dropped with the reason shown; dates become year / month / weekday; numeric columns are imputed and scaled, categories one-hot encoded (rare levels grouped).
+4. **Comparison:** stratified 80/20 split; 5-fold cross-validation of logistic / ridge regression, random forest, extra trees, histogram gradient boosting, XGBoost and LightGBM next to a naive baseline (class-balanced where it matters). Primary metric: ROC AUC (binary), macro F1 (multiclass) or R² (numbers). A 5-minute budget skips slow candidates; above 50,000 rows a random sample is used.
+5. **Held-out test:** the winner is refit and scored on the 20% it never saw — accuracy, F1, ROC AUC, a confusion matrix and recall / precision per class, or R², MAE, RMSE and predicted-vs-actual points.
+6. **Drivers:** permutation importance on the held-out rows, with direction (the prediction at the 10th vs 90th percentile of a number; the highest and lowest category).
+7. **Warnings:** a near-perfect score, one column carrying ≥ 50% of the skill (a likely leak), or a model barely better than the baseline.
+8. **Explanation:** one forced-tool Claude call that may use only the numbers above (headline, summary, drivers, actions, caveats); deterministic fallback.
+9. **Deploy:** the winner is refit on all rows and saved as `outputs/models/automl_<target>_<timestamp>.joblib` — a full scikit-learn pipeline that `features/scoring.py` (Model lab, `/api/predict`) scores directly. A *Try a prediction* form scores one hand-filled row for free.
+
+Training costs 30 credits and is refunded if it fails or the backend restarts mid-training; one training runs at a time. Measured on the sample loan book (6,500 loans): about a minute for six algorithms; with `collectibility` left in, AutoML warned that it carries 66% of the skill, and without the leaky columns the explanation said plainly that the model "almost never catches loans that will be written off".
+
+---
+
+## Scheduled delivery
+
+`features/delivery.py`, `frontend/components/views/DeliveryView.tsx`. Send something to people every day, week (pick the day) or month (day 1–28) at a set time:
+
+| What | What arrives |
+|---|---|
+| A board | Its queries re-run first (no AI); every KPI with its change since the previous delivery; optionally the board as PowerPoint and/or Excel |
+| A Studio report or deck (Agent task, Analytics run) | The latest version as PDF, Word or PowerPoint (only items that already exist are offered, so a delivery never pays for building one) |
+
+| Channel | Notes |
+|---|---|
+| Email | SMTP from `.env` only (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`; port 465 = SSL, otherwise STARTTLS); up to 20 recipients; HTML KPI table + attachments up to 15 MB |
+| Slack · Teams | Incoming webhook; the summary and a link (webhooks can't carry files) |
+| Webhook | JSON with summary, KPIs, link and — under 5 MB — the files base64-encoded |
+
+Every URL passes the shared SSRF guard (public `https://` only, no redirects) and webhook URLs are masked in every API response (editing with the masked value keeps the real one). A scheduler thread checks every 30 seconds; each schedule keeps a history of its last 20 sends, and a failed send is retried at the next slot rather than in a loop. **Send now** doubles as the test button. Delivery is free. Storage: `data/delivery/schedules.json`.
+
+---
+
 ## Studio: editable decks and documents
 
 <table><tr>
@@ -363,6 +442,18 @@ Every report the desk writes can be edited, presented and exported (`features/st
 
 ---
 
+## Accounts
+
+The landing page (`/`) is public; the desk (`/app`) and every API route need an account, except sign-up / log-in, share links and the live log stream (`features/auth.py`, middleware in `app.py`).
+
+- Email + password (at least 8 characters); passwords hashed with **scrypt** and a salt per user.
+- Sessions: a random token in an **HttpOnly, SameSite=Lax** cookie (`ouro_session`), valid 30 days; the server stores only its SHA-256 hash. Failed log-ins are throttled per email and per client address.
+- When a session ends, the next request returns the browser to `/login` and back afterwards.
+- `AUTH_REQUIRED=0` turns the requirement off for local scripts.
+- Storage: `data/auth/users.json`, `data/auth/sessions.json`. All accounts currently share one wallet and one history (see *Known limitations*).
+
+---
+
 ## Pricing & credits
 
 ![Pricing](static/o30.JPG)
@@ -386,9 +477,11 @@ Everything is paid for with **credits** (1 credit = $0.01 / Rp 159 at top-up pri
 | Parallel researcher (≤4 searches) | 40 |
 | Workflow step: Web search · AI insights · Report with AI text · AI classify | 10 · 2 · 5 · 5 per run (other steps free) |
 | AI edit of a deck or document (Studio) | 3 |
+| Board build · Board chat message | 20 · 3 |
+| AutoML training | 30 |
 | Extra dashboard page · Model lab call · Document Q&A | 5 · 2 · 3 |
 
-Free: planning (Analytics and Agent), dashboard filtering and refreshing, building and editing workflows with AI, deterministic workflow steps, editing / presenting / exporting decks and documents by hand, the Data chat overview, follow-ups and pinboard refreshes.
+Free: planning (Analytics and Agent), dashboard and board filtering, layout edits, undo, refreshing and exports, building and editing workflows with AI, deterministic workflow steps, editing / presenting / exporting decks and documents by hand, the Data chat overview, follow-ups and pinboard refreshes, AutoML data loading and test predictions, and Scheduled delivery.
 
 Top-ups (never expire): Small 1,000 / $10 · Medium 5,000 / $45 · Large 20,000 / $160. Annual plans: pay 10 months, get 12.
 
@@ -407,8 +500,15 @@ Top-ups (never expire): Small 1,000 / $10 · Medium 5,000 / $45 · Large 20,000 
 
 **Read-only by construction**
 - Data chat and the Agent reach data only through the read-only FastMCP server. Every SQL statement is parsed (sqlglot) and rejected unless it is a single `SELECT` — no writes, DDL, `SELECT INTO`, row locks, multiple statements, dangerous functions (`pg_sleep`, `dblink`, `pg_read_file`…) or credential/system tables (Supabase `auth`/`vault`, `pg_authid`…) — then runs in a `READ ONLY` transaction with a statement timeout.
-- Analytics agent SQL, NL→SQL and dashboard queries are SELECT-only; dbt never modifies raw tables.
+- Boards, Metrics, Workflow, AutoML, NL→SQL and the Analytics crew use the same SQL guard (`tools/sql_guard.py`) with read-only transactions; dbt writes only to its own `uaa_staging` / `uaa_marts` schemas and never modifies raw tables.
+- **The Analytics crew can't damage a connected database** (`tools/db_safety.py`): table and column names chosen by the AI must be plain identifiers that really exist (no SQL can be smuggled into a table name); its `Query Database` tool runs the full SQL guard; on any database other than Ouroboros's own it may create tables but **never overwrites or appends to a pre-existing table** — it writes `<name>_uaa` and tells the agent to use that. Tables it created are remembered per database in `data/db_writes.json` (keyed by a hash of host/port/database, never credentials). The ETL tool's `csv:` source may only read CSV files inside `data/` and `outputs/` (no URLs, no `.env`).
 - AI-written code (charts, Data chat, Agent) runs in separate sandboxed processes: no file, network or OS access, no secrets in the environment.
+
+**Every Claude call** (`tools/llm_security.py`)
+- One checkpoint wraps the Anthropic SDK (direct calls, LangChain and CrewAI alike): secrets are removed from prompts **and** replies (environment key values, database passwords, common key formats); a prompt-size cap, a calls-per-minute circuit breaker and an optional daily token budget; an audit log in `data/audit/llm_calls.jsonl` with time, caller, model, tokens, flags and latency — never the text. Settings: `LLM_MAX_PROMPT_CHARS`, `LLM_MAX_CALLS_PER_MIN`, `LLM_DAILY_TOKEN_BUDGET`, `LLM_AUDIT`.
+
+**Outbound requests** (`tools/url_guard.py`)
+- One SSRF guard for every address a user or the AI can aim at: the Agent's browser, connector file URLs, Workflow alerts, monitor webhooks and Deliver. Every resolved address must be globally routable — loopback, private ranges, link-local / cloud metadata, carrier-grade NAT (100.64/10), IPv4-mapped IPv6 and URLs with embedded credentials are refused; webhooks must be `https://` and redirects are not followed.
 
 **Personal data**
 - Columns holding names, emails, phone numbers, IDs or addresses are **pseudonymised (HMAC) before the model sees them**; SQL aliases are traced, so `SELECT email AS x` stays masked. Free text in results and messages is redacted.
@@ -421,12 +521,15 @@ Top-ups (never expire): Small 1,000 / $10 · Medium 5,000 / $45 · Large 20,000 
 **Data chat, Studio and Workflow**
 - Glossary definitions are screened for prompt injection before they are added to the analyst's instructions.
 - Full result tables for downloads live in each chat's private `data/` folder; only charts are under the public `outputs/`.
-- Studio images may only reference charts the platform produced; Workflow alerts post only to `https://` public addresses (SSRF guard, no redirects); workflow tokens and webhook URLs are masked in every API response, like database passwords.
+- Studio images may only reference charts the platform produced; workflow tokens and Workflow / Deliver webhook URLs are masked in every API response, like database passwords; SMTP settings exist only in `.env`.
 - AI classify redacts personal data before sending text to Claude.
 
 **Agent-specific**
 - No tools that send, post, buy, sign up or delete; it never fills forms or logs in.
 - The browser refuses private, loopback, link-local and cloud-metadata addresses, including on redirects (SSRF protection), and runs without the backend's API keys.
+
+**Accounts**
+- scrypt-hashed passwords, HttpOnly session cookies (only a hash stored server-side), throttled log-ins; every API route requires a session except sign-up / log-in, share links and the live log.
 
 **Operations**
 - Every Data chat turn is audit-logged to `data/audit/datachat_audit.jsonl` (flags, tools, timing and a message hash — never the content); Data chat is rate-limited.
@@ -463,13 +566,13 @@ JDBC strings and driver-less schemes are converted automatically; SSL is added f
 | *Tenant or user not found* | Wrong pooler region, or `.<project-ref>` missing from the user |
 | *Password authentication failed* | Reset the database password and update the URI |
 
-dbt modelling requires PostgreSQL; every other feature works with all engines above.
+dbt modelling requires PostgreSQL; every other feature works with all engines above (Boards refuse local-file URIs such as SQLite and DuckDB).
 
 ---
 
 ## Connecting apps
 
-All four apps import data straight from the tools a team already uses: the Analytics brief (*From an app*), Data chat (*Connect an app*), the Agent (*Bring in data from an app*) and Workflow (*Import from an app*, side panel or Upload step). `features/connectors.py` fetches it and hands it to the same code path as an upload: tables go into SQLite for Analytics, into the Data chat sandbox, into the Agent's workspace under `inputs/` (the plan and agent are told to start from them), or into the workflow's files; documents from Drive become context for Analytics runs and Agent tasks (as extracted text).
+Every app imports data straight from the tools a team already uses: the Analytics brief (*From an app*), Boards, Data chat (*Connect an app*), the Agent (*Bring in data from an app*) and Workflow (*Import from an app*, side panel or Upload step). `features/connectors.py` fetches it and hands it to the same code path as an upload: tables go into SQLite for Analytics, into the Data chat sandbox, into the Agent's workspace under `inputs/` (the plan and agent are told to start from them), or into the workflow's files; documents from Drive become context for Analytics runs and Agent tasks (as extracted text).
 
 | App | Paste | Becomes | Access |
 |---|---|---|---|
@@ -482,7 +585,7 @@ All four apps import data straight from the tools a team already uses: the Analy
 
 Tokens are pasted per import (never stored) or set on the server as `SLACK_BOT_TOKEN`, `NOTION_TOKEN`, `AIRTABLE_TOKEN`; `GET /api/connectors` reports which are configured without revealing them. Private Google files use the service-account key in `GOOGLE_APPLICATION_CREDENTIALS` (share the file with the account's email). Limits: 100 MB per file, 200,000 rows per app table. An import is a snapshot; import again to refresh.
 
-**Sign in instead of tokens (`features/oauth.py`):** *Connect Google* / *Connect Slack* in the connector picker opens the provider's consent page; afterwards Sheets / Drive read your own private files and Slack reads the channels its bot is in, with no pasted tokens. One-time setup: create a Google OAuth client (Web application; redirect URI `http://localhost:8002/api/oauth/google/callback`; enable the Drive and Sheets APIs) and/or a Slack app (redirect URL `http://localhost:8002/api/oauth/slack/callback`, bot scopes below), then set `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` and `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET`. Tokens are encrypted at rest (`data/oauth/`); without user accounts a connection is shared by everyone using the server.
+**Sign in instead of tokens (`features/oauth.py`):** *Connect Google* / *Connect Slack* in the connector picker opens the provider's consent page; afterwards Sheets / Drive read your own private files and Slack reads the channels its bot is in, with no pasted tokens. One-time setup: create a Google OAuth client (Web application; redirect URI `http://localhost:8002/api/oauth/google/callback`; enable the Drive and Sheets APIs) and/or a Slack app (redirect URL `http://localhost:8002/api/oauth/slack/callback`, bot scopes below), then set `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` and `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET`. Tokens are encrypted at rest (`data/oauth/`); a connection is shared by all accounts on the server.
 
 **Slack app scopes:** `channels:history`, `channels:read`, `groups:history`, `groups:read`, `users:read`; invite the bot to each channel. **Notion:** add the integration under the database's ••• → *Connections*. **Airtable:** token scope `data.records:read` with access to the base.
 
@@ -501,10 +604,12 @@ Tokens are pasted per import (never stored) or set on the server as `SLACK_BOT_T
 | Data engineering | dbt-core 1.11 + dbt-postgres; Apache Airflow 3.2 (Docker Compose) |
 | Databases | SQLAlchemy 2 with psycopg2, PyMySQL, pymssql, oracledb, sqlalchemy-redshift, sqlalchemy-bigquery, snowflake-sqlalchemy, duckdb-engine, SQLite |
 | SQL safety | sqlglot (parser-based validation) |
-| ML / analytics | pandas, NumPy, scikit-learn, statsmodels, SHAP, joblib |
+| ML / analytics | pandas, NumPy, scikit-learn, XGBoost, LightGBM, statsmodels, SHAP, joblib |
 | Charts | Plotly (+ Kaleido), Altair, Bokeh, Matplotlib, Seaborn |
 | Retrieval & graph | sentence-transformers + FAISS (TF-IDF fallback); Zep Cloud + Exa |
 | Reports | ReportLab (PDF), python-pptx (PowerPoint), openpyxl (Excel), Markdown |
+| Accounts & security | scrypt password hashing, HttpOnly session cookies, sqlglot SQL guard, SSRF guard, Claude call checkpoint with audit log |
+| Delivery | smtplib (email), httpx (Slack / Teams / webhooks) |
 | Observability | LangSmith (optional) |
 
 ---
@@ -539,16 +644,7 @@ npm run dev                       # http://localhost:3010
 
 The frontend calls the backend at `http://localhost:8002` (override with `NEXT_PUBLIC_BACKEND_URL`). Restart the backend after pulling new code — it doesn't auto-reload.
 
-**First run: industry kits.** The Home page's **Start here** panel lets you pick an industry and try every app on a fictional sample company (`features/kits.py`; data generated on first use into `data/samples/`, no database or file needed):
-
-| Kit | Company | Data | Patterns to find |
-|---|---|---|---|
-| Food & beverage | Kopi Nusantara | 2025 orders, customers, campaigns (8 cities, 5 channels) | Ramadan shifts sales to GoFood; 11.11 / 12.12 spikes; online share 35% → 58% |
-| Retail | Pasar Raya Mart | daily sales per store × category, 2024-2025 (10 stores) | Lebaran rush; payday weeks; QRIS adoption; a competitor hits Bekasi Timur; a new Malang store |
-| Banking | BPR Sejahtera Makmur | 6,500 loans with collectibility + monthly portfolio by branch × product, 2023-2025 | a Garut dry season more than doubles its NPL; consumer loans sour after Lebaran |
-| Marketing | Batik Lestari | daily results per campaign on 5 channels, 2025 | TikTok gets cheaper; Meta costs spike at Harbolnas; Google Search fatigue; Hari Batik burst |
-
-Each kit comes with **metric definitions** (NPL ratio, ROAS, like-for-like sales…) and **six questions** (including a *why* and a *forecast / what-if* question) that travel with its Data chat only, so your own glossary is untouched; an **Analytics brief**, an **Agent goal**, and a ready-made **Workflow** whose AI step reads a compact summary table. Questions answered on a kit chat use these definitions.
+Open **http://localhost:3010**, sign up, and the desk opens at `/app`. If the backend sits at start-up for minutes with almost no CPU, turn off any VPN and start it again.
 
 **4. Airflow (optional, needs Docker Desktop)** — generate the setup from *Data models* (or `POST /api/airflow/setup`), then:
 
@@ -562,7 +658,7 @@ docker compose up -d --build      # UI http://localhost:8085 (user uaa, password
 The app also has its own **Docs** page (rail → Docs) with guides for every app:
 
 ![Built-in docs](static/o31.JPG)
-<sub>Docs → Using Data chat, including the guide to why-did-it-change, forecasts and what-if.</sub>
+<sub>Docs → Using Data chat. The Docs cover accounts, every app (including Boards, Metrics, AutoML and Deliver), security, pricing, the API and known limitations.</sub>
 
 ## Environment variables
 
@@ -586,13 +682,24 @@ The app also has its own **Docs** page (rail → Docs) with guides for every app
 | `GOOGLE_OAUTH_CLIENT_ID` · `GOOGLE_OAUTH_CLIENT_SECRET` | | *Connect Google* for Sheets / Drive |
 | `SLACK_CLIENT_ID` · `SLACK_CLIENT_SECRET` | | *Connect Slack* |
 | `OAUTH_REDIRECT_BASE` · `OAUTH_ENCRYPTION_KEY` | | Callback base URL (default `http://localhost:8002`) · key for stored tokens (generated if unset) |
+| `AUTH_REQUIRED` | | `0` turns off the sign-in requirement for local scripts (default on) |
+| `SMTP_HOST` · `SMTP_PORT` · `SMTP_USER` · `SMTP_PASSWORD` · `SMTP_FROM` | for email delivery | Mail server for *Deliver* (465 = SSL, otherwise STARTTLS; `SMTP_STARTTLS=0` turns it off) |
+| `PUBLIC_APP_URL` | | Link used in delivered messages (default `http://localhost:3010/app`) |
+| `LLM_MAX_PROMPT_CHARS` · `LLM_MAX_CALLS_PER_MIN` · `LLM_DAILY_TOKEN_BUDGET` · `LLM_AUDIT` | | Claude checkpoint limits (900000 · 150 · 0 = off · true) |
 | `LANGCHAIN_API_KEY` | | LangSmith tracing |
 
 ---
 
 ## API reference
 
-Interactive docs at **http://localhost:8002/docs**.
+Interactive docs at **http://localhost:8002/docs**. Every route needs a signed-in session cookie except `/api/auth/*`, `/api/share/*` and `/api/stream/*`.
+
+**Accounts**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/auth/signup` · `/api/auth/login` · `/api/auth/logout` | Sign up · log in · log out (sets / clears the session cookie) |
+| `GET` | `/api/auth/me` | The signed-in user |
 
 **Analytics pipeline**
 
@@ -642,6 +749,44 @@ Interactive docs at **http://localhost:8002/docs**.
 | `POST` | `…/{kind}/ai` · `/restore` · `/rebuild` | AI edit (3 credits) · restore a version · start over from the source |
 | `GET` | `…/{kind}/versions` · `/export?format=pptx\|docx\|pdf` | Version history · download |
 
+**Boards and Metrics**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` · `POST` | `/api/autodash` | List · create a board (files, database, app imports, goal; charges 20 credits) |
+| `GET` · `DELETE` | `/api/autodash/{id}` · `GET /api/autodash/jobs/{job}` | Open or delete a board · build progress |
+| `POST` | `/api/autodash/{id}/render` · `/layout` · `/chat` · `/restore` · `/export` · `/quality/fix` | Filter · edit layout · chat (3 credits) · undo to a version · export PPTX / XLSX · apply a data fix |
+| `GET` · `POST` · `PUT` · `DELETE` | `/api/metrics…` · `/api/metrics/test` · `/api/metrics/suggest` | Metric definitions · test one on a table · suggest from columns |
+| `POST` · `GET` | `/api/quality/check` · `/api/quality/{token}/fix` · `/api/quality/{token}/download` | Data-quality check · apply a fix · download the cleaned file |
+
+**AutoML**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/automl/uploads` | Structured files uploaded in this session |
+| `POST` | `/api/automl/datasets` | Load data: `file`, or `file_id` (+ `table`), or `db_uri` + `db_schema` + `table`; returns column profiles and suggested targets |
+| `GET` | `/api/automl/datasets/{id}` | A loaded dataset |
+| `POST` · `GET` | `/api/automl/jobs` | Train (`dataset_id`, `target`, `task` = auto / classification / regression, `exclude`; 30 credits) · list models |
+| `GET` · `DELETE` | `/api/automl/jobs/{id}` | Progress, leaderboard, held-out metrics, drivers, warnings, explanation · delete (and its deployed file) |
+| `POST` | `/api/automl/jobs/{id}/predict` | Predict one row (`row`), free |
+
+**Scheduled delivery**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/delivery/options` | Boards, reports and decks that can be delivered; whether email is configured |
+| `GET` · `POST` | `/api/delivery/schedules` | List · create (`name`, `item`, `channel`, `cadence`) |
+| `PUT` · `DELETE` | `/api/delivery/schedules/{id}` | Change (e.g. `enabled`) · delete |
+| `POST` | `/api/delivery/schedules/{id}/send` | Send now; returns the history entry |
+
+**Sharing and brand**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` · `POST` | `/api/share/{token}` · `/api/share/{token}/comments` | View a shared deck, document or pinboard · comment (public routes) |
+| `DELETE` · `GET` | `/api/shares/{token}` · `/api/shares/network` | Turn a link off · this computer's network address for links |
+| `GET` · `POST` · `DELETE` | `/api/brand/kits…` · `/api/brand/kits/{id}/logo` | Brand kits · upload a logo |
+
 **Workflow**
 
 | Method | Endpoint | Description |
@@ -674,7 +819,7 @@ Interactive docs at **http://localhost:8002/docs**.
 | `GET` · `POST` · `DELETE` | `/api/dashboards…` | Design, list, view (with filters), delete dashboards |
 | `GET` · `POST` | `/api/dbt/runs…` · `/api/dbt/build` · `/api/dbt/rebuild` | dbt build history, model SQL, AI-designed build, rebuild |
 | `POST` · `GET` | `/api/airflow/setup` · `/api/airflow/status` · `/api/airflow/trigger` | Airflow setup, status, run now |
-| `GET` · `POST` | `/api/models` · `/api/predict` | Trained models, scoring |
+| `GET` · `POST` | `/api/models` · `/api/predict` | Trained models (incl. AutoML `automl_<target>`), scoring |
 | `POST` | `/api/analyze/drivers` · `/api/analyze/whatif` · `/api/explore` | SHAP drivers, what-if, NL → read-only SQL |
 | `POST` | `/api/rag/query` | Document Q&A |
 | `GET` · `POST` · `DELETE` | `/api/monitors…` | Drift monitoring |
@@ -692,7 +837,14 @@ Universal_AI_Analytics/
 ├── zep_graph.py              Zep knowledge graph builder
 ├── graphs/                   LangGraph planners (analytics, marketing)
 ├── features/
-│   ├── agent.py              Agent: planning, tool loop, parallel researchers, deliverables
+│   ├── agent.py              Agent: planning (files read in parallel), tool loop, parallel researchers, deliverables
+│   ├── auto_dashboard.py     Boards: explore → design → repair → insights, chat, versions, exports
+│   ├── automl.py             AutoML: datasets, column roles, model comparison, holdout, drivers, explanation, deploy
+│   ├── delivery.py           Scheduled delivery: schedules, email / Slack / Teams / webhook, scheduler thread
+│   ├── auth.py               Accounts: sign-up, log-in, sessions
+│   ├── metrics.py            Semantic layer: metric definitions shared by every app
+│   ├── share.py · brand.py   Share links with comments · brand kits
+│   ├── oauth.py              Connect Google / Connect Slack
 │   ├── studio.py             Studio: editable deck + document for Agent, Analytics and Data chat; AI edits, versions, pptx/docx/pdf
 │   ├── workflow.py           Workflow: step catalog, graph executor, AI builder, schedules
 │   ├── data_chat.py          Data chat sessions + LangChain agent, overview, glossary, exports, pinboard
@@ -703,9 +855,14 @@ Universal_AI_Analytics/
 │   ├── db_connect.py         Any-provider connection normaliser, test, shared pools
 │   ├── dashboard.py          Automatic dashboard design + LLM-free data
 │   ├── deeper.py             SHAP drivers, what-if, NL→SQL
-│   └── scoring.py · monitor.py · rag.py
+│   └── scoring.py · monitor.py · rag.py   Model scoring (incl. AutoML pipelines) · drift monitors · document Q&A
 ├── tools/
 │   ├── llm_guard.py          PII masking, injection screening, untrusted-data fencing, answer sanitising
+│   ├── llm_security.py       Checkpoint on every Claude call: secret redaction, limits, audit log
+│   ├── sql_guard.py          sqlglot validation: one read-only SELECT
+│   ├── db_safety.py          Safe table/column names, read-only queries, never-overwrite writes for the crew
+│   ├── url_guard.py          Shared SSRF guard (public addresses only, https webhooks, no redirects)
+│   ├── data_quality.py · excel_reader.py   Quality checks + fixes · every-sheet Excel reading
 │   ├── py_kernel.py          Persistent sandboxed Python kernel (Data chat, Agent)
 │   ├── insights.py           explain_change() + forecast() helpers preloaded in the Data chat kernel
 │   ├── web_fetch.py          One-page headless browser fetch (Agent), run as a killable subprocess
@@ -717,30 +874,36 @@ Universal_AI_Analytics/
 ├── dbt/uaa/                  Generated dbt project
 ├── airflow/                  Docker Compose, Dockerfile, DAGs, dbt profile
 ├── frontend/
-│   ├── app/page.tsx          App rail + layout
-│   ├── components/views/     HomeView · Analytics views · DataChatView · AgentView · WorkflowView · PricingView · GuideView …
+│   ├── app/page.tsx          Public landing page (/), with /login and /share/<token>
+│   ├── app/app/page.tsx      The desk: app rail + layout (/app, signed in)
+│   ├── components/views/     Analytics views · AutoDashboardView · MetricsView · DataChatView · AgentView · AutoMLView · WorkflowView · DeliveryView · PricingView · GuideView …
 │   ├── components/studio/    Deck and document editors, present mode, OpenStudio buttons
 │   ├── components/datachat/  Data overview, follow-ups, glossary panel
 │   ├── components/AppConnectors.tsx   "From an app" picker used by every app
 │   └── lib/                  API client, billing hook, types
-├── data/                     Private: runs, chats, agent workspaces, wallet, audit log, dbt builds
-└── outputs/                  Public (served at /outputs): charts, reports, agent deliverables
+├── data/                     Private: runs, chats, agent workspaces, boards, AutoML datasets/jobs, delivery schedules, accounts, wallet, audit logs, dbt builds
+└── outputs/                  Public (served at /outputs): charts, reports, agent deliverables; models/ holds trained and AutoML models
 ```
 
 ---
 
 ## Known limitations
 
-- **No user accounts yet:** one shared wallet and one shared history. Run it locally or behind your own access control.
+- **Accounts share one wallet and one history:** everyone who signs in sees the same runs, chats, boards, models and credits; per-user and per-team separation isn't built yet.
 - **Demo checkout:** plan changes and top-ups don't take payment until a payment provider is connected.
-- **One Analytics run at a time;** runs live in memory and are saved to JSON files (no multi-user job queue).
+- **Plan schedule limits aren't enforced:** the plans list how many schedules they include, but Workflow and Deliver don't count them yet.
+- **One Analytics run at a time:** the run's database is a server-wide setting (`ACTIVE_DB_URI`), so a second run would share it; runs live in memory and are saved to JSON files.
 - dbt modelling and Airflow orchestration target **PostgreSQL** (including Supabase, Neon, RDS, Cloud SQL, Azure PostgreSQL).
-- Data chat's first question in a new chat is slow (library loading + sandbox start), and so is the first data overview; both are much faster afterwards. Tables and charts from answers given before exports existed can't be downloaded.
+- **Deliver** sends the latest version of an existing report or deck; it doesn't re-run an Analytics run on a schedule. Email needs SMTP settings.
+- **AutoML** trains one model at a time, samples above 50,000 rows and compares fixed algorithm settings (no per-model tuning).
+- The crew's fallback *Clean table* / *Normalize types* tools read the first 10,000 rows, so on Ouroboros's own database they shorten a large table; dbt (the default on PostgreSQL) doesn't have this problem.
+- Data chat's first question in a new chat is slow (library loading + sandbox start), and so is the first data overview; both are much faster afterwards.
 - The Agent can't use sites that block automated browsers (e.g. Shopee, Blibli) and can't log in anywhere. Its arithmetic in the written answer isn't checked against the numbers it computed.
-- App imports into Analytics, Data chat and the Agent are snapshots (import again to refresh); only Workflow's *App data* step fetches fresh data on every run. Connectors use pasted links and tokens or a Google service account — there is no OAuth sign-in.
-- Studio decks use the Ouroboros style only (no custom themes); text formatting is bold and italic; images are limited to the platform's own charts. Building a deck for a large report takes up to a minute or two the first time.
+- App imports into Analytics, Boards, Data chat and the Agent are snapshots (import again to refresh); only Workflow's *App data* step fetches fresh data on every run.
+- Studio images are limited to the platform's own charts; building a deck for a large report takes up to a minute or two the first time. Share links only work for people who can reach the computer running Ouroboros.
 - The Analytics *Conversation* tab still runs chart code in-process with keyword filters; Data chat and the Agent use the full sandbox.
 - Altair and Bokeh charts are HTML-only, so they don't appear in PDF or PowerPoint exports.
+- Schedules (Workflow, Deliver, monitors) run only while the backend is running.
 
 ---
 
@@ -753,14 +916,14 @@ Universal_AI_Analytics/
 
 **Layers (top to bottom):**
 
-1. **Interface** — Next.js 14 web app with an app rail: Home · Analytics · Data chat · Agent · Workflow · Pricing · Docs; Studio editors for decks and documents.
+1. **Interface** — Next.js 14: a public landing page and, behind sign-in, a desk with an app rail: Analytics · Boards · Metrics · Data chat · Agent · AutoML · Workflow · Deliver · Pricing · Docs; Studio editors for decks and documents.
 2. **API** — FastAPI backend on port 8002: REST, Server-Sent Events, persistence, credit billing.
 3. **Data connection** — any-provider normaliser for PostgreSQL (Supabase, Neon, RDS, Cloud SQL, Azure), MySQL, SQL Server, Oracle, Redshift, BigQuery, Snowflake, DuckDB/SQLite, plus file uploads and app connectors (Google Sheets, Drive, Slack, Notion, Airtable, URL); shared pools.
 4. **Data engineering** — dbt (Claude-designed staging → marts with tests) and Airflow in Docker (daily build + quality gate).
 5. **Planning** — LangGraph planners (analytics, marketing) with a human approval gate; Agent plan review.
 6. **Agents on Claude Haiku 5.5** — Analytics crew (5) → Marketing crew (4); Data chat agent; autonomous Agent with up to 8 parallel researchers.
-7. **Safe tool layer** — read-only FastMCP server, sqlglot SQL validation, sandboxed Python kernel, LLM guard (PII masking, injection screening, output sanitising), SSRF-guarded headless browser.
-8. **Outputs** — Power BI-style dashboard, AI-written charts, editable decks and documents (Studio) exported to PowerPoint / Word / PDF, Excel, knowledge graph, RAG answers, drift alerts, Slack / Teams / webhook alerts.
+7. **Safe tool layer** — read-only FastMCP server, sqlglot SQL validation, DB safety for the crew (real tables only, never overwrite user tables), sandboxed Python kernel, LLM guard (PII masking, injection screening, output sanitising), a checkpoint on every Claude call (secret redaction, limits, audit), one shared SSRF guard.
+8. **Outputs** — Power BI-style dashboards and Boards, AI-written charts, deployed AutoML models, editable decks and documents (Studio) exported to PowerPoint / Word / PDF, Excel, knowledge graph, RAG answers, drift alerts, scheduled deliveries by email / Slack / Teams / webhook.
 9. **External services** — Anthropic Claude, Tavily, Exa, Zep, LangSmith, optional Gemini (posters).
 
 **Main flows:**
@@ -768,11 +931,14 @@ Universal_AI_Analytics/
 - Data chat: question → MCP tools (SQL / Python in sandbox) → answer with code.
 - Agent: goal → plan → approve → search / browse / analyse ⇄ parallel researchers → answer with conclusion + recommendations → deliverables.
 - Workflow: sources (incl. live app data) → transforms → quality check / condition → ML / AI → report, export or alert, on a schedule.
-- Studio: any report → editable deck + document → AI edits → present / export.
+- Studio: any report → editable deck + document → AI edits → present / export / share.
+- Boards: files / database → explore → design → repair → insights → filter and chat for free.
+- AutoML: table → pick a target → compare 6 models → held-out test → drivers + explanation → deployed model.
+- Deliver: board or report → schedule → email / Slack / Teams / webhook.
 
 **Suggested colours:** interface ink/charcoal with a vermilion accent · data & engineering teal · AI planning & agents violet · outputs Power BI blue `#118DFF` · external services grey.
 
-**Key numbers:** 7 apps · 9 crew agents + Data chat agent + Agent with 8 parallel researchers · 11+ database engines · 6 app connectors · 32 workflow steps · 21–42 dbt tests per build · ~4k tokens per dashboard, 0 to filter it · ~97% prompt-cache hit rate in Agent tasks.
+**Key numbers:** 10 apps · 9 crew agents + Data chat agent + Agent with 8 parallel researchers · 11+ database engines · 6 app connectors · 32 workflow steps · 21–42 dbt tests per build · ~4k tokens per dashboard, 0 to filter it · ~97% prompt-cache hit rate in Agent tasks · 6 AutoML algorithms + baseline · 4 delivery channels.
 
 ---
 

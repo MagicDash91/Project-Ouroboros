@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from crewai.tools import tool
 from features.db_connect import cached_engine as create_engine   # one shared pool per database
+from tools.db_safety import safe_table, safe_columns, write_table, write_note, read_only_query
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -122,7 +123,7 @@ def train_fraud_detection_model(table_name: str) -> str:
     """
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 10000", engine)
+        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
 
         try:
             target_column = _find_target(df, ["is_fraud", "fraud", "fraudulent", "label", "target"])
@@ -186,7 +187,7 @@ def train_credit_risk_model(table_name: str) -> str:
     """
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 10000", engine)
+        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
 
         try:
             target_column = _find_target(df, ["default", "is_default", "credit_risk", "risk", "label", "target"])
@@ -244,7 +245,7 @@ def train_churn_model(table_name: str) -> str:
     """
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 10000", engine)
+        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
 
         try:
             target_column = _find_target(df, ["Churn", "churn", "is_churn", "churned", "label", "target"])
@@ -315,7 +316,8 @@ def time_series_forecast(
         engine = create_engine(_get_db_uri())
         # Full history (not the first N rows), aggregated per period below — transactional
         # tables have many rows per date, so each row is NOT a time-series point.
-        df = pd.read_sql(f"SELECT {date_column} AS d, {value_column} AS v FROM {table_name} LIMIT 2000000", engine)
+        d_col, v_col = safe_columns(engine, table_name, date_column, value_column)
+        df = pd.read_sql(f"SELECT {d_col} AS d, {v_col} AS v FROM {safe_table(engine, table_name)} LIMIT 2000000", engine)
         df["d"] = pd.to_datetime(df["d"], errors="coerce")
         df["v"] = pd.to_numeric(df["v"], errors="coerce")
         df = df.dropna()
@@ -389,7 +391,7 @@ def customer_segmentation(table_name: str) -> str:
     n_clusters = 4
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 10000", engine)
+        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
 
         id_cols = [c for c in df.columns if c.lower() in ("customerid", "id", "customer_id")]
         df.drop(columns=id_cols, errors="ignore", inplace=True)
@@ -413,8 +415,7 @@ def customer_segmentation(table_name: str) -> str:
 
         segment_counts = df["segment"].value_counts().sort_index().to_dict()
 
-        seg_table = f"{table_name}_segmented"
-        df.to_sql(seg_table, create_engine(_get_db_uri()), if_exists="replace", index=False)
+        seg_table = write_table(df, f"{table_name.split('.')[-1].strip(chr(34))}_segmented", engine)
 
         try:
             analysis = query_nvidia([

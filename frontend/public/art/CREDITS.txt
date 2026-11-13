@@ -10,3 +10,14 @@ workflow.jpg   Landscape, after 1900 (public domain).
                https://commons.wikimedia.org/wiki/File:Redon_-_Landscape_after_1900.jpg
 
 hero.jpg       Painting signed LEVASSEUR, from vice.com (2017). COPYRIGHTED: local preview only until licensed.
+
+Landing page ("Who it's for"), Odilon Redon, public domain (CC0), The Metropolitan Museum of Art. Centre-cropped square, 900x900.
+vase-of-flowers-pink-background.jpg  Vase of Flowers (Pink Background), ca. 1906. https://www.metmuseum.org/art/collection/search/437382
+etruscan-vase-with-flowers.jpg       Etruscan Vase with Flowers, 1900-1910.        https://www.metmuseum.org/art/collection/search/437381
+bouquet-in-a-chinese-vase.jpg        Bouquet in a Chinese Vase, ca. 1912-14.       https://www.metmuseum.org/art/collection/search/437378
+
+Landing page ("Six ways to work"), Odilon Redon, public domain, via Wikimedia Commons. Square crop, 1000x1000.
+boards.jpg   The Buddha, 1906-07. Musee d'Orsay. https://commons.wikimedia.org/wiki/File:Odilon_Redon_-_Buddha_-_Google_Art_Project.jpg
+metrics.jpg  Butterflies, c. 1910. Museum of Modern Art. https://commons.wikimedia.org/wiki/File:Odilon_Redon_-_Butterflies_-_Google_Art_Project.jpg
+
+Source logos (public/logos): Simple Icons (CC0), https://simpleicons.org. Trademarks belong to their owners.

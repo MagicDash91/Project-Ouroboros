@@ -43,6 +43,7 @@ psycopg2-binary>=2.9              # PostgreSQL / Supabase
 pymysql>=1.1                      # MySQL / MariaDB
 pyarrow>=14
 openpyxl>=3.1
+xlrd>=2.0.1                     # old .xls workbooks (pandas needs it; openpyxl reads .xlsx only)
 tabulate>=0.9                     # DataFrame.to_markdown
 pyyaml>=6.0
 pydantic>=2.7,<3

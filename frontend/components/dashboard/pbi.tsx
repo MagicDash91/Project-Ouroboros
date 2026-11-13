@@ -178,15 +178,23 @@ interface SeriesProps {
   height?: number;
   selected?: Set<string>;
   onSelect?: (label: string) => void;
+  /** Colours for this visual (series, or slices for a donut); empty = the Power BI palette. */
+  palette?: string[];
 }
 
-export function BarChart({ rows, x, y, format, horizontal = false, height = 260, selected, onSelect }:
-  SeriesProps & { horizontal?: boolean }) {
+const colorsOf = (palette?: string[]) => (palette && palette.length ? palette : PBI.palette);
+
+export function BarChart({ rows, x, y, format, horizontal = false, stacked = false, height = 260, selected, onSelect, palette }:
+  SeriesProps & { horizontal?: boolean; stacked?: boolean }) {
+  const pal = colorsOf(palette);
   const [ref, width] = useWidth<HTMLDivElement>();
   const [tip, setTip] = useState<Tip | null>(null);
   const labels = rows.map((r) => String(r[x] ?? "(Blank)"));
-  const series = y.map((key, i) => ({ key, color: PBI.palette[i % PBI.palette.length], values: rows.map((r) => num(r[key]) ?? 0) }));
-  const max = Math.max(0, ...series.flatMap((s) => s.values));
+  const series = y.map((key, i) => ({ key, color: pal[i % pal.length], values: rows.map((r) => num(r[key]) ?? 0) }));
+  // Stacked: one bar per category, series on top of each other; the axis runs to the tallest total.
+  const stack = stacked && series.length > 1;
+  const totals = labels.map((_, i) => series.reduce((a, s) => a + Math.max(0, s.values[i]), 0));
+  const max = stack ? Math.max(0, ...totals) : Math.max(0, ...series.flatMap((s) => s.values));
   const ticks = niceTicks(max);
   const top = ticks[ticks.length - 1] || 1;
   const anySel = !!selected && selected.size > 0;
@@ -199,7 +207,7 @@ export function BarChart({ rows, x, y, format, horizontal = false, height = 260,
   const iw = Math.max(10, width - m.l - m.r);
   const ih = Math.max(10, height - m.t - m.b);
   const band = (horizontal ? ih : iw) / Math.max(1, labels.length);
-  const barSize = Math.max(2, (band * 0.72) / series.length);
+  const barSize = Math.max(2, (band * 0.72) / (stack ? 1 : series.length));
   const scale = (v: number) => (v / top) * (horizontal ? iw : ih);
 
   const hover = (e: React.MouseEvent, i: number) => {
@@ -230,13 +238,33 @@ export function BarChart({ rows, x, y, format, horizontal = false, height = 260,
             })}
             {labels.map((label, i) => {
               const dim = anySel && !selected!.has(label);
-              const base = i * band + (band - barSize * series.length) / 2;
+              const base = i * band + (band - barSize * (stack ? 1 : series.length)) / 2;
+              let below = 0; // stacked: where the next segment starts
               return (
                 <g key={label + i} style={{ cursor: onSelect ? "pointer" : "default" }}
                   onMouseMove={(e) => hover(e, i)} onClick={() => onSelect?.(label)}>
                   <rect x={horizontal ? m.l : m.l + i * band} y={horizontal ? m.t + i * band : m.t}
                     width={horizontal ? iw : band} height={horizontal ? band : ih} fill="transparent" />
-                  {series.map((s, si) => {
+                  {stack && series.map((s) => {
+                    const len = scale(Math.max(0, s.values[i]));
+                    const start = below;
+                    below += len;
+                    return (
+                      <g key={s.key} opacity={dim ? 0.35 : 1}>
+                        {horizontal ? (
+                          <rect x={m.l + start} y={m.t + base} width={len} height={barSize} fill={s.color} stroke="#fff" strokeWidth={0.5} />
+                        ) : (
+                          <rect x={m.l + base} y={m.t + ih - start - len} width={barSize} height={len} fill={s.color} stroke="#fff" strokeWidth={0.5} />
+                        )}
+                      </g>
+                    );
+                  })}
+                  {stack && showLabels && (horizontal ? (
+                    <text x={m.l + scale(totals[i]) + 4} y={m.t + base + barSize / 2 + 4} fontSize={11} fill={PBI.sub}>{fmt(totals[i], format)}</text>
+                  ) : (
+                    <text x={m.l + base + barSize / 2} y={m.t + ih - scale(totals[i]) - 4} fontSize={11} fill={PBI.sub} textAnchor="middle">{fmt(totals[i], format)}</text>
+                  ))}
+                  {!stack && series.map((s, si) => {
                     const v = s.values[i];
                     const len = scale(Math.max(0, v));
                     const off = base + si * barSize;
@@ -278,12 +306,13 @@ export function BarChart({ rows, x, y, format, horizontal = false, height = 260,
 
 // ── Line chart ────────────────────────────────────────────────────────────────
 
-export function LineChart({ rows, x, y, format, height = 260 }: SeriesProps) {
+export function LineChart({ rows, x, y, format, height = 260, palette, area = false }: SeriesProps & { area?: boolean }) {
+  const pal = colorsOf(palette);
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [tip, setTip] = useState<Tip | null>(null);
   const labels = rows.map((r) => String(r[x] ?? "(Blank)"));
-  const series = y.map((key, i) => ({ key, color: PBI.palette[i % PBI.palette.length], values: rows.map((r) => num(r[key])) }));
+  const series = y.map((key, i) => ({ key, color: pal[i % pal.length], values: rows.map((r) => num(r[key])) }));
   const vals = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
   const ticks = niceTicks(Math.max(0, ...vals));
   const top = ticks[ticks.length - 1] || 1;
@@ -324,8 +353,13 @@ export function LineChart({ rows, x, y, format, height = 260 }: SeriesProps) {
             )}
             {series.map((s) => {
               const pts = s.values.map((v, i) => (v === null ? null : `${px(i)},${py(v)}`)).filter(Boolean).join(" ");
+              const idx = s.values.map((v, i) => (v === null ? -1 : i)).filter((i) => i >= 0);
               return (
                 <g key={s.key}>
+                  {area && idx.length > 1 && (
+                    <polygon points={`${px(idx[0])},${m.t + ih} ${pts} ${px(idx[idx.length - 1])},${m.t + ih}`}
+                      fill={s.color} opacity={series.length > 1 ? 0.14 : 0.2} />
+                  )}
                   <polyline points={pts} fill="none" stroke={s.color} strokeWidth={2} />
                   {s.values.map((v, i) => v !== null && (labels.length <= 24 || i === hoverIdx) && (
                     <circle key={i} cx={px(i)} cy={py(v)} r={i === hoverIdx ? 4.5 : 3} fill={s.color} stroke="#fff" strokeWidth={1.5} />
@@ -343,13 +377,14 @@ export function LineChart({ rows, x, y, format, height = 260 }: SeriesProps) {
 
 // ── Donut chart ───────────────────────────────────────────────────────────────
 
-export function DonutChart({ rows, x, y, format, height = 260, selected, onSelect }: SeriesProps) {
+export function DonutChart({ rows, x, y, format, height = 260, selected, onSelect, palette }: SeriesProps) {
+  const pal = colorsOf(palette);
   const [tip, setTip] = useState<Tip | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const items = rows.map((r, i) => ({
     label: String(r[x] ?? "(Blank)"),
     value: Math.max(0, num(r[y[0]]) ?? 0),
-    color: PBI.palette[i % PBI.palette.length],
+    color: pal[i % pal.length],
   }));
   const total = items.reduce((a, b) => a + b.value, 0) || 1;
   const size = Math.min(height - 10, 220);

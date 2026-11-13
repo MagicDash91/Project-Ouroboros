@@ -6,6 +6,7 @@ import { errorText, formatBytes, postForm, postJSON } from "@/lib/api";
 import type { DbTestResult, RunRequest, UploadedFile } from "@/lib/types";
 import { onIntent } from "@/lib/intent";
 import { AppConnectors } from "./AppConnectors";
+import { QualityReport, type Quality } from "./views/MetricsView";
 import { useToast } from "./Overlays";
 import { Button, Field, Toggle, cx } from "./ui";
 
@@ -189,6 +190,22 @@ export function RunBrief({ busy, onRun }: { busy: boolean; onRun: (req: RunReque
   const inputRef = useRef<HTMLInputElement>(null);
 
   const uploading = files.some((f) => f.state === "uploading");
+  const [openQ, setOpenQ] = useState<string | null>(null);
+  const [fixing, setFixing] = useState(false);
+
+  // One-click data-quality fix: the server rewrites the uploaded table, then returns the new report.
+  async function fixUpload(key: string, fileId: string, fix: Record<string, unknown>) {
+    setFixing(true);
+    try {
+      const r = await postJSON<{ fixed: string; quality: Quality }>(`/api/upload/${fileId}/quality/fix`, fix);
+      setFiles((fs) => fs.map((x) => (x.key === key && x.info ? { ...x, info: { ...x.info, quality: r.quality } } : x)));
+      toast(r.fixed, "ok");
+    } catch (e) {
+      toast(errorText(e), "bad");
+    } finally {
+      setFixing(false);
+    }
+  }
 
   // Hand-off from Home's "Start here": a suggested brief with the sample attached.
   useEffect(
@@ -310,7 +327,8 @@ export function RunBrief({ busy, onRun }: { busy: boolean; onRun: (req: RunReque
             {files.length > 0 && (
               <ul className="mt-2 divide-y divide-rule border-y border-rule">
                 {files.map((f) => (
-                  <li key={f.key} className="flex items-center gap-3 py-2 text-[12.5px]">
+                  <li key={f.key} className="py-2 text-[12.5px]">
+                  <div className="flex items-center gap-3">
                     <span className="w-9 shrink-0 font-mono text-[10px] uppercase text-mute">{f.name.split(".").pop()}</span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate" title={f.name}>
@@ -321,6 +339,18 @@ export function RunBrief({ busy, onRun }: { busy: boolean; onRun: (req: RunReque
                         {f.state === "ready" && f.info && describe(f.info)}
                         {f.state === "ready" && f.source && ` · from ${f.source}`}
                         {f.state === "failed" && (f.error || "Upload failed")}
+                        {f.state === "ready" && f.info?.quality && (
+                          <button
+                            onClick={() => setOpenQ((k) => (k === f.key ? null : f.key))}
+                            className={cx(
+                              "ml-2 underline-offset-2 hover:underline",
+                              f.info.quality.issues.length ? "text-[#A4262C]" : "text-[#107C10]",
+                            )}
+                          >
+                            Quality {f.info.quality.score}
+                            {f.info.quality.issues.length ? ` · ${f.info.quality.issues.length} issue(s)` : " · clean"}
+                          </button>
+                        )}
                       </span>
                     </span>
                     {f.state === "uploading" ? (
@@ -334,6 +364,12 @@ export function RunBrief({ busy, onRun }: { busy: boolean; onRun: (req: RunReque
                         <X size={14} />
                       </button>
                     )}
+                  </div>
+                  {openQ === f.key && f.info?.quality && (
+                    <div className="mt-2 border border-rule bg-paper p-3">
+                      <QualityReport q={f.info.quality} busy={fixing} onFix={(fix) => fixUpload(f.key, f.info!.file_id, fix)} />
+                    </div>
+                  )}
                   </li>
                 ))}
               </ul>
