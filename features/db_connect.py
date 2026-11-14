@@ -10,14 +10,24 @@ JDBC strings, Azure/ODBC "Server=…;Database=…" strings, or plain SQLAlchemy 
   * adds SSL for managed cloud Postgres hosts that require it (Supabase, Neon, RDS,
     Azure, Aiven, Render, …) unless the URI already says otherwise;
   * applies an optional schema the way each engine expects (Postgres/Redshift
-    search_path, MySQL database, Snowflake/BigQuery path).
+    search_path, MySQL database, Snowflake/BigQuery path);
+  * warehouses: BigQuery URIs may not read key files from the server's disk
+    (credentials_path is refused); a key uploaded through save_bigquery_key() is referenced
+    as ?key=<id> and resolved here; every BigQuery query is capped at
+    BIGQUERY_MAX_BYTES_BILLED (default 10 GiB) unless the URI sets a lower maximum_bytes_billed.
+    Snowflake queries get a statement timeout in tools/db_safety.read_only_query.
 
 `test_connection` connects with a timeout, lists schemas/tables, and explains failures
 in plain language (credentials, firewall/allow-list per provider, missing driver, …).
 """
 
+import base64
+import hashlib
 import importlib
+import json
+import os
 import re
+from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qsl, quote, unquote
 
@@ -62,6 +72,11 @@ _PROVIDERS = [
 # Managed Postgres hosts that need SSL by default.
 _SSL_HOSTS = re.compile(r"(supabase\.(co|com)|neon\.tech|rds\.amazonaws\.com|redshift\.amazonaws\.com|database\.azure\.com|"
                         r"aivencloud\.com|render\.com|ondigitalocean\.com|tsdb\.cloud\.timescale\.com|cockroachlabs\.cloud)$")
+
+
+_KEY_DIR = Path(__file__).resolve().parent.parent / "data" / "secrets" / "bigquery"   # private, not under /outputs
+_KEY_ID = re.compile(r"^[0-9a-f]{20}$")
+BQ_MAX_BYTES = int(os.environ.get("BIGQUERY_MAX_BYTES_BILLED", str(10 * 1024 ** 3)))
 
 
 class ConnectionStringError(ValueError):
@@ -154,6 +169,8 @@ def normalize_db_uri(raw: str, schema: str = "") -> str:
     family = u.get_backend_name()
     if family in ("postgresql", "redshift") and "sslmode" not in query and _SSL_HOSTS.search(host):
         query["sslmode"] = "require"
+    if family == "bigquery":
+        query = _bigquery_query(query)
 
     schema = (schema or "").strip()
     if schema:
@@ -192,6 +209,8 @@ def describe(uri: str) -> dict:
             if re.match(r"^\d+\.\d+\.\d+\.\d+$", host):
                 hint = ("If this is GCP Cloud SQL, add your IP under Connections → Authorized networks "
                         "(or run the Cloud SQL Auth Proxy and connect to 127.0.0.1).")
+    if "credentials_base64" in u.query:
+        u = u.update_query_dict({"credentials_base64": "***"})
     return {"engine": engine, "provider": provider, "network_hint": hint,
             "masked": u.render_as_string(hide_password=True), "dialect": base}
 
@@ -308,3 +327,43 @@ def test_connection(raw: str, schema: str = "", max_tables: int = 60) -> dict:
                 "schemas": [{"name": s, "tables": t, "visible": s in visible} for s, t in schemas.items()]}
     except Exception as e:
         return {**out, "error": _explain(str(e), info)}
+
+
+# ── Warehouses: BigQuery keys and cost cap ────────────────────────────────────
+
+def save_bigquery_key(raw: bytes) -> dict:
+    """Store an uploaded service-account key (private folder) and return {key_id, project_id, client_email}."""
+    try:
+        info = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise ConnectionStringError("That file isn't a JSON key. Download one from Google Cloud → IAM → "
+                                    "Service accounts → Keys → Add key → JSON.")
+    if not isinstance(info, dict) or info.get("type") != "service_account" or not all(
+            isinstance(info.get(k), str) and info.get(k) for k in ("project_id", "client_email", "private_key")):
+        raise ConnectionStringError("That JSON isn't a service-account key (it needs type, project_id, "
+                                    "client_email and private_key).")
+    body = json.dumps(info, sort_keys=True).encode("utf-8")
+    key_id = hashlib.sha256(body).hexdigest()[:20]
+    _KEY_DIR.mkdir(parents=True, exist_ok=True)
+    (_KEY_DIR / f"{key_id}.json").write_bytes(body)
+    return {"key_id": key_id, "project_id": info["project_id"], "client_email": info["client_email"]}
+
+
+def _bigquery_query(query: dict) -> dict:
+    q = dict(query)
+    if "credentials_path" in q:
+        raise ConnectionStringError("credentials_path isn't allowed (it reads a file on the server). Upload the "
+                                    "service-account key in the BigQuery helper instead, or use credentials_base64.")
+    key_id = q.pop("key", None)
+    if key_id:
+        key_id = str(key_id)
+        p = _KEY_DIR / f"{key_id}.json"
+        if not _KEY_ID.match(key_id) or not p.is_file():
+            raise ConnectionStringError("That BigQuery key isn't on this server any more – upload it again.")
+        q["credentials_base64"] = base64.b64encode(p.read_bytes()).decode("ascii")
+    try:
+        asked = int(q.get("maximum_bytes_billed") or 0)
+    except ValueError:
+        raise ConnectionStringError("maximum_bytes_billed must be a whole number of bytes.")
+    q["maximum_bytes_billed"] = str(min(asked, BQ_MAX_BYTES) if asked > 0 else BQ_MAX_BYTES)
+    return q

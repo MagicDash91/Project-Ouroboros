@@ -21,3 +21,8 @@ boards.jpg   The Buddha, 1906-07. Musee d'Orsay. https://commons.wikimedia.org/w
 metrics.jpg  Butterflies, c. 1910. Museum of Modern Art. https://commons.wikimedia.org/wiki/File:Odilon_Redon_-_Butterflies_-_Google_Art_Project.jpg
 
 Source logos (public/logos): Simple Icons (CC0), https://simpleicons.org. Trademarks belong to their owners.
+
+Landing page ("Eight ways to work"), added 2026-11-14. Odilon Redon, public domain, via Wikimedia Commons. Square crop, 1000x1000.
+automl.jpg   The Cyclops, c. 1914. Kroller-Muller Museum. https://commons.wikimedia.org/wiki/File:Odilon_Redon_-_The_Cyclops,_c._1914.jpg
+deliver.jpg  La Barque (The Boat), c. 1902. https://commons.wikimedia.org/wiki/File:La_Barque_(The_Boat),_c._1902,_Odilon_Redon.jpg
+Logos snowflake, mariadb, amazonrds, cockroachlabs: Simple Icons (CC0).

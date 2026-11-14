@@ -30,7 +30,7 @@ META_PATH  = os.path.join(CHARTS_DIR, "session_charts.json")
 os.makedirs(CHARTS_DIR, exist_ok=True)
 
 MAX_CHARTS = 6
-MAX_ROWS   = 50000
+MAX_ROWS   = int(os.environ.get("ANALYSIS_MAX_ROWS", "2000000"))   # every row (same cap as tools/data_profile.py)
 TOP_N      = 12
 
 KINDS = {

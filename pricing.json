@@ -18,7 +18,7 @@
     "workflow_ai_report":   {"credits": 5,   "label": "Workflow · Report step with AI text", "detail": "Per run; layout-only reports are free"},
     "workflow_ai_classify": {"credits": 5,   "label": "Workflow · AI classify step", "detail": "Per run, up to 500 rows labelled"},
     "model_lab":            {"credits": 2,   "label": "Model lab call", "detail": "Scoring, SHAP drivers, what-if, NL→SQL"},
-    "automl_train":         {"credits": 30,  "label": "AutoML training", "detail": "Compares up to 6 algorithms, explains the winner and deploys it; refunded if it fails"},
+    "automl_train":         {"credits": 30,  "label": "AutoML training", "detail": "Compares up to 6 algorithms (or 7 forecasting methods), explains the winner and deploys it; refunded if it fails"},
     "rag_question":         {"credits": 3,   "label": "Document Q&A question", "detail": "Cited answer over your documents"},
     "agent_ai_edit":        {"credits": 3,   "label": "AI edit of a deck or document", "detail": "One instruction to Claude in the Agent's deck or document editor; manual edits and exports are free"}
   },

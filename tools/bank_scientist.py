@@ -36,8 +36,9 @@ from config import POSTGRES_URI, query_ollama as query_nvidia
 
 
 def _get_db_uri() -> str:
-    """Return the active database URI (set per-run via ACTIVE_DB_URI env var)."""
-    return os.environ.get("ACTIVE_DB_URI") or POSTGRES_URI
+    """Return the active database URI (this run's database; see tools/run_context.py)."""
+    from tools.run_context import current_db
+    return current_db()
 
 _BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MODELS_DIR = os.path.join(_BASE_DIR, "outputs", "models")
@@ -123,7 +124,8 @@ def train_fraud_detection_model(table_name: str) -> str:
     """
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
+        from tools.data_profile import load_table
+        df = load_table(engine, table_name)[0]     # every row, not a sample
 
         try:
             target_column = _find_target(df, ["is_fraud", "fraud", "fraudulent", "label", "target"])
@@ -187,7 +189,8 @@ def train_credit_risk_model(table_name: str) -> str:
     """
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
+        from tools.data_profile import load_table
+        df = load_table(engine, table_name)[0]     # every row, not a sample
 
         try:
             target_column = _find_target(df, ["default", "is_default", "credit_risk", "risk", "label", "target"])
@@ -245,7 +248,8 @@ def train_churn_model(table_name: str) -> str:
     """
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
+        from tools.data_profile import load_table
+        df = load_table(engine, table_name)[0]     # every row, not a sample
 
         try:
             target_column = _find_target(df, ["Churn", "churn", "is_churn", "churned", "label", "target"])
@@ -391,7 +395,8 @@ def customer_segmentation(table_name: str) -> str:
     n_clusters = 4
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
+        from tools.data_profile import load_table
+        df = load_table(engine, table_name)[0]     # every row, not a sample
 
         id_cols = [c for c in df.columns if c.lower() in ("customerid", "id", "customer_id")]
         df.drop(columns=id_cols, errors="ignore", inplace=True)

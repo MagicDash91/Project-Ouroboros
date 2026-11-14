@@ -27,8 +27,9 @@ from config import POSTGRES_URI, TAVILY_API_KEY, query_ollama as query_nvidia
 
 
 def _get_db_uri() -> str:
-    """Return the active database URI (set per-run via ACTIVE_DB_URI env var)."""
-    return os.environ.get("ACTIVE_DB_URI") or POSTGRES_URI
+    """Return the active database URI (this run's database; see tools/run_context.py)."""
+    from tools.run_context import current_db
+    return current_db()
 
 
 _CSV_ROOTS = ("data", "outputs")      # uploads and run outputs; never .env, code or other folders
@@ -87,64 +88,57 @@ def _get_tavily():
 @tool("Profile Database Table")
 def profile_database_table(table_name: str) -> str:
     """
-    Read a table from PostgreSQL, profile its quality, and return a full data summary.
+    Load EVERY row of a table and profile it with pandas: dtypes, nulls, unique counts, value
+    counts, numeric spread, outliers, date ranges, duplicates, likely ID columns, the strongest
+    correlations and the first 20 rows. You read this profile, never the raw data.
 
     Args:
-        table_name: Name of the PostgreSQL table to profile.
+        table_name: Name of the database table to profile.
 
     Returns:
-        JSON with the full quality profile.
+        JSON profile computed over all rows.
     """
     try:
+        from tools.data_profile import load_table, load_note, profile_frame
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)   # sample for stats
-        with engine.connect() as conn:
-            total_rows = int(conn.execute(text(f"SELECT COUNT(*) FROM {safe_table(engine, table_name)}")).scalar() or 0)
-
-        # Build a concise profile — deliberately kept short so LLM context isn't overwhelmed
-        columns_detail = []
-        for col in df.columns:
-            sample_vals = df[col].dropna().iloc[:3].astype(str).tolist() if df[col].notna().any() else []
-            columns_detail.append({
-                "name":   col,
-                "dtype":  str(df[col].dtype),
-                "nulls":  int(df[col].isna().sum()),
-                "unique": int(df[col].nunique()),
-                "sample": sample_vals,
-            })
-
-        # Only include numeric range stats (no median — keeps output short)
-        numeric_stats = {}
-        for col in list(df.select_dtypes(include=np.number).columns)[:8]:
-            numeric_stats[col] = {
-                "mean": round(float(df[col].mean()), 2),
-                "std":  round(float(df[col].std()),  2),
-                "min":  round(float(df[col].min()),  2),
-                "max":  round(float(df[col].max()),  2),
-            }
-
-        # Only include top-3 values for a few low-cardinality categorical columns
-        cat_distributions = {}
-        for col in list(df.select_dtypes(include="object").columns)[:5]:
-            if df[col].nunique() <= 20:
-                # Keys may be dates/decimals; JSON keys must be strings.
-                cat_distributions[col] = {str(k): int(v) for k, v in df[col].value_counts().head(3).items()}
-
-        profile = {
-            "status":        "success",
-            "table":         table_name,
-            "rows":          total_rows,
-            "sampled_rows":  len(df),
-            "column_count":  len(df.columns),
-            "columns":       list(df.columns),
-            "columns_detail": columns_detail,
-            "numeric_stats":  numeric_stats,
-            "categorical_distributions": cat_distributions,
-        }
-
-        return json.dumps(profile, indent=2, default=str)
+        df, info = load_table(engine, table_name)
+        return json.dumps({"status": "success", "table": table_name, "total_rows": info["total_rows"],
+                           "rows_loaded": info["rows"], "coverage": load_note(info),
+                           **profile_frame(df)}, indent=1, default=str)
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)})
+
+
+@tool("Explore Data with Pandas")
+def explore_data_with_pandas(table_name: str, code: str) -> str:
+    """
+    Run your own pandas code over the FULL table to understand it - unique values, value_counts,
+    groupby aggregates, crosstabs, correlations, date ranges, segment comparisons. `df` is the
+    whole table; `pd` and `np` are ready. print() what you need, or end with an expression
+    (a DataFrame/Series is returned as a 20-row preview). No file, network or OS access; personal
+    data columns are pseudonymised. Keep each call to one question.
+
+    Args:
+        table_name: The database table to load as df.
+        code: pandas code, e.g. "df.groupby('region')['revenue'].agg(['count','sum','mean'])".
+
+    Returns:
+        JSON with printed output and the result preview.
+    """
+    try:
+        from tools.data_profile import explore, load_note
+        engine = create_engine(_get_db_uri())
+        r = explore(engine, table_name, code or "")
+        if not r.get("ok"):
+            return json.dumps({"status": "error", "message": str(r.get("error"))[:1500],
+                               "hint": "df is the full table; use only pandas/numpy, no files or imports of os/io."})
+        loaded = r.get("loaded") or {}
+        return json.dumps({"status": "success", "stdout": (r.get("stdout") or "")[:6000],
+                           "result": r.get("result"),
+                           "coverage": load_note(loaded) if loaded.get("total_rows") else ""},
+                          indent=1, default=str)[:12000]
+    except Exception as e:
+        return json.dumps({"status": "error", "message": str(e)[:800]})
 
 
 @tool("Fetch Financial Market Data")
@@ -383,7 +377,8 @@ def clean_table_columns(table_name: str) -> str:
     """
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
+        from tools.data_profile import load_table, load_note
+        df, _load = load_table(engine, table_name)     # every row, not a sample
         original_cols = list(df.columns)
         dropped = []
 
@@ -408,6 +403,7 @@ def clean_table_columns(table_name: str) -> str:
             "dropped_columns": dropped,
             "kept_columns":    list(df.columns),
             "row_count":       len(df),
+            "coverage":        load_note(_load),
         }, indent=2)
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)})
@@ -429,7 +425,8 @@ def normalize_column_dtypes(table_name: str) -> str:
     numeric_threshold = 0.90
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
+        from tools.data_profile import load_table, load_note
+        df, _load = load_table(engine, table_name)     # every row, not a sample
 
         converted = {}
         unchanged = {}
@@ -468,6 +465,7 @@ def normalize_column_dtypes(table_name: str) -> str:
             "note":              write_note(table_name, saved),
             "columns_converted": converted,
             "columns_unchanged": unchanged,
+            "coverage":          load_note(_load),
             "row_count":         len(df),
         }, indent=2)
     except Exception as e:
@@ -566,7 +564,8 @@ def build_dbt_models(goal: str) -> str:
         run = build_dbt_project(goal=goal, db_uri=uri)
         marts = [m for m in run["models"] if m["layer"] == "marts" and m["status"] == "success"]
         if run["ok"] and marts:
-            os.environ["ACTIVE_DB_URI"] = with_mart_search_path(uri)
+            from tools.run_context import set_db
+            set_db(with_mart_search_path(uri))
         failed = [t for t in run["tests"] if t["status"] not in ("pass", "success")]
         return json.dumps({
             "status": "success" if run["ok"] else "partial",
@@ -592,7 +591,7 @@ def query_database(sql_query: str) -> str:
         sql_query: A valid SELECT statement (no DDL/DML).
 
     Returns:
-        JSON with column names and up to 200 rows of results.
+        JSON with column names, the row count and the first 20 result rows.
     """
     try:
         # Same rules as Data chat's MCP run_sql: one parser-validated SELECT (no writes, DDL,
@@ -609,7 +608,9 @@ def query_database(sql_query: str) -> str:
             "status":  "success",
             "rows":    len(df),
             "columns": list(df.columns),
-            "data":    df.head(200).to_dict(orient="records"),
+            "data":    df.head(20).to_dict(orient="records"),
+            "note":    ("" if len(df) <= 20 else f"Showing 20 of {len(df):,} rows; aggregate in SQL or use "
+                        "'Explore Data with Pandas' instead of reading more rows."),
         }, indent=2, default=str)
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)})

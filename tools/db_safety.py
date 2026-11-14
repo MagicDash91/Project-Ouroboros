@@ -8,7 +8,8 @@ tools/db_safety.py – guard rails for code that talks to the user's database di
   safe_columns(engine, t, *cols) – same for column names (checked against the table's columns).
   read_only_query(engine, sql)  – one parser-validated SELECT (tools/sql_guard: no writes, DDL,
                                   file/network/sleep functions, system catalogs) run in a READ
-                                  ONLY transaction with a statement timeout (PostgreSQL).
+                                  ONLY transaction with a statement timeout (PostgreSQL; Snowflake gets
+                                  the timeout; BigQuery the bytes-billed cap from features/db_connect).
   write_table(df, name, engine) – Ouroboros may create and replace ITS OWN tables. On a database
                                   the user connected (anything but Ouroboros's own POSTGRES_URI)
                                   it never overwrites or appends into a table that was already
@@ -150,6 +151,8 @@ def read_only_query(engine, sql: str, max_rows: int = 10_000) -> pd.DataFrame:
             if engine.dialect.name == "postgresql":
                 cur.execute("SET TRANSACTION READ ONLY")
                 cur.execute(f"SET LOCAL statement_timeout = {int(QUERY_TIMEOUT_MS)}")
+            elif engine.dialect.name == "snowflake":
+                cur.execute(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {int(QUERY_TIMEOUT_MS // 1000)}")
             cur.execute(sql)       # raw DB-API, no parameters: '%' in ILIKE stays literal
             cols = [d[0] for d in cur.description] if cur.description else []
             rows = cur.fetchmany(max_rows) if cols else []

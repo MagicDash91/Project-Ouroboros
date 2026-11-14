@@ -181,7 +181,7 @@ flowchart LR
 
 | Analytics crew | Responsibility |
 |---|---|
-| Senior Data Engineer | Discovers tables, profiles the tested dbt marts (cleans raw tables only when dbt isn't available) |
+| Senior Data Engineer | Discovers tables, profiles the tested dbt marts over every row and explores them with sandboxed pandas (cleans raw tables only when dbt isn't available) |
 | Senior Data Scientist | Time-series forecast for sales over time, classifier when an outcome column exists, segmentation for customer data |
 | Data Preprocessing Analyst | Numeric version of the data for correlation analysis |
 | Senior Data Analyst | Problem-driven charts, business insight report, PDF and PowerPoint |
@@ -375,14 +375,14 @@ After that, **filtering, re-ordering, renaming, changing chart types, refreshing
 
 ---
 
-## AutoML: predict any column
+## AutoML: predict any column, or forecast it
 
-`features/automl.py`, `frontend/components/views/AutoMLView.tsx`. Pick a column to predict; the desk trains and compares several models, explains the winner and deploys it.
+`features/automl.py`, `features/automl_forecast.py`, `frontend/components/views/AutoMLView.tsx`. Pick a column to predict — a category, a number, or a number over time — and the desk trains and compares several models, explains the winner and deploys it.
 
 ![AutoML churn model](static/o32.JPG)
 <sub>AutoML on 7,043 telecom customers: six algorithms against a baseline (logistic regression wins, ROC AUC 0.846), the held-out check (78% of churners found, 51% of flags correct) and what to do with it, in plain language.</sub>
 
-1. **Data:** a file (CSV, Excel — every sheet read properly —, Parquet, Feather, JSON), an upload already in the workspace, or a database table read through `tools/db_safety.read_only_query` (parser-checked `SELECT`, `READ ONLY` transaction). Up to 200,000 rows; free.
+1. **Data:** a file (CSV, Excel — every sheet read properly —, Parquet, Feather, JSON), an upload already in the workspace, an app import (Google Sheets, Drive, Airtable, Notion, Slack, a file URL), or a database table read through `tools/db_safety.read_only_query` (parser-checked `SELECT`, `READ ONLY` transaction) — Snowflake and BigQuery included. Up to 1,000,000 rows; free.
 2. **Target and exclusions:** suggested targets first; *Decide for me*, *A category* or *A number*; leave out columns only known after the outcome.
 3. **Column roles:** identifiers, constants and free text are dropped with the reason shown; dates become year / month / weekday; numeric columns are imputed and scaled, categories one-hot encoded (rare levels grouped).
 4. **Comparison:** stratified 80/20 split; 5-fold cross-validation of logistic / ridge regression, random forest, extra trees, histogram gradient boosting, XGBoost and LightGBM next to a naive baseline (class-balanced where it matters). Primary metric: ROC AUC (binary), macro F1 (multiclass) or R² (numbers). A 5-minute budget skips slow candidates; above 50,000 rows a random sample is used.
@@ -392,7 +392,18 @@ After that, **filtering, re-ordering, renaming, changing chart types, refreshing
 8. **Explanation:** one forced-tool Claude call that may use only the numbers above (headline, summary, drivers, actions, caveats); deterministic fallback.
 9. **Deploy:** the winner is refit on all rows and saved as `outputs/models/automl_<target>_<timestamp>.joblib` — a full scikit-learn pipeline that `features/scoring.py` (Model lab, `/api/predict`) scores directly. A *Try a prediction* form scores one hand-filled row for free.
 
-Training costs 30 credits and is refunded if it fails or the backend restarts mid-training; one training runs at a time. Measured on the sample loan book (6,500 loans): about a minute for six algorithms; with `collectibility` left in, AutoML warned that it carries 66% of the skill, and without the leaky columns the explanation said plainly that the model "almost never catches loans that will be written off".
+### Forecasting: a number over time
+
+Choose **A number over time (forecast)**, a date column, the number to forecast (or **Number of rows**: orders, tickets, transactions), the period (day / week / month / quarter / year, inferred from the dates if you leave it) and how many periods ahead. `features/automl_forecast.py`:
+
+1. **Series:** every loaded row is added up (or averaged, for prices and rates) per period. Empty periods count as 0 for sums or are interpolated for averages; a last period that isn't over yet (data ending on the 14th) is left out so it can't look like a collapse.
+2. **Backtest:** up to seven methods each forecast the horizon from up to three earlier cut-offs and are compared with what really happened: naive (the baseline), seasonal naive, drift, Holt-Winters exponential smoothing, Theta, a small auto-ARIMA and gradient boosting on lags + calendar features. Ranked by MAE (lower is better), with sMAPE and MASE (below 1 = better than repeating last cycle).
+3. **Forecast:** the winner, refit on the whole series, forecasts the horizon. The shaded **≈80% range** at each step comes from the winner's own backtest errors at that step and never narrows further out.
+4. **Explanation:** trend, seasonality (strongest and weakest month / weekday) and next-periods-vs-last totals go to one Claude call; rule-based fallback. The chart, table and a CSV download are in the job view; the series and forecast are saved under `outputs/models/forecasts/`.
+
+Measured on three years of synthetic daily orders (64,514 rows): monthly sales — Holt-Winters won with sMAPE 15% and the half-finished last month was dropped automatically; weekly order counts — sMAPE 3.7%, MASE 0.22; daily sales over 14 days — seasonality "strongest Saturday" found from the data.
+
+Training (or a forecast) costs 30 credits and is refunded if it fails or the backend restarts mid-training; one training runs at a time. Measured on the sample loan book (6,500 loans): about a minute for six algorithms; with `collectibility` left in, AutoML warned that it carries 66% of the skill, and without the leaky columns the explanation said plainly that the model "almost never catches loans that will be written off".
 
 ---
 
@@ -501,7 +512,9 @@ Top-ups (never expire): Small 1,000 / $10 · Medium 5,000 / $45 · Large 20,000 
 **Read-only by construction**
 - Data chat and the Agent reach data only through the read-only FastMCP server. Every SQL statement is parsed (sqlglot) and rejected unless it is a single `SELECT` — no writes, DDL, `SELECT INTO`, row locks, multiple statements, dangerous functions (`pg_sleep`, `dblink`, `pg_read_file`…) or credential/system tables (Supabase `auth`/`vault`, `pg_authid`…) — then runs in a `READ ONLY` transaction with a statement timeout.
 - Boards, Metrics, Workflow, AutoML, NL→SQL and the Analytics crew use the same SQL guard (`tools/sql_guard.py`) with read-only transactions; dbt writes only to its own `uaa_staging` / `uaa_marts` schemas and never modifies raw tables.
-- **The Analytics crew can't damage a connected database** (`tools/db_safety.py`): table and column names chosen by the AI must be plain identifiers that really exist (no SQL can be smuggled into a table name); its `Query Database` tool runs the full SQL guard; on any database other than Ouroboros's own it may create tables but **never overwrites or appends to a pre-existing table** — it writes `<name>_uaa` and tells the agent to use that. Tables it created are remembered per database in `data/db_writes.json` (keyed by a hash of host/port/database, never credentials). The ETL tool's `csv:` source may only read CSV files inside `data/` and `outputs/` (no URLs, no `.env`).
+- **The Analytics crew can't damage a connected database** (`tools/db_safety.py`): table and column names chosen by the AI must be plain identifiers that really exist (no SQL can be smuggled into a table name); its `Query Database` tool runs the full SQL guard and returns at most 20 rows to Claude; on any database other than Ouroboros's own it may create tables but **never overwrites or appends to a pre-existing table** — it writes `<name>_uaa` and tells the agent to use that. Tables it created are remembered per database in `data/db_writes.json` (keyed by a hash of host/port/database, never credentials). The ETL tool's `csv:` source may only read CSV files inside `data/` and `outputs/` (no URLs, no `.env`).
+- **Claude reads a profile, not your table** (`tools/data_profile.py`): the crew's tools load **every row** (streamed, up to `ANALYSIS_MAX_ROWS`, default 2,000,000) and compute on all of it, but Claude sees only the first 20 rows (personal data pseudonymised) plus pandas facts over all rows — dtypes, nulls, unique counts, value counts, numeric spread and outliers, date ranges, duplicates, likely ID columns and the strongest correlations. To learn more it calls **Explore Data with Pandas**: its own pandas code over the full table, run in Data chat's sandboxed kernel (allow-listed imports, no file / OS / network access, PII masked on load, 90-second limit), and only printed output and a 20-row preview come back.
+- **Each run's database is private to that run** (`tools/run_context.py`): it lives in a ContextVar carried into the threads the crew starts, not in a process-wide environment variable, so other requests never see it.
 - AI-written code (charts, Data chat, Agent) runs in separate sandboxed processes: no file, network or OS access, no secrets in the environment.
 
 **Every Claude call** (`tools/llm_security.py`)
@@ -549,7 +562,7 @@ Paste the connection string your provider gives you, optionally set a schema, an
 | AWS RDS / Aurora | `postgresql://admin:pass@db.xxxx.us-east-1.rds.amazonaws.com:5432/sales` |
 | Amazon Redshift | `redshift://user:pass@cluster.xxxx.us-east-1.redshift.amazonaws.com:5439/dev` |
 | GCP Cloud SQL | `postgresql://postgres:pass@<public-ip>:5432/analytics` |
-| Google BigQuery | `bigquery://my-gcp-project/my_dataset` (credentials via `GOOGLE_APPLICATION_CREDENTIALS`) |
+| Google BigQuery | `bigquery://my-gcp-project/my_dataset` (credentials via `GOOGLE_APPLICATION_CREDENTIALS`, or `?key=<id>` from the form below) |
 | Azure PostgreSQL | `postgresql://user:pass@server.postgres.database.azure.com:5432/postgres` |
 | Azure SQL | `Server=tcp:server.database.windows.net,1433;Database=sales;User ID=admin;Password=…;` |
 | Snowflake | `snowflake://user:pass@account/DATABASE/SCHEMA?warehouse=WH` |
@@ -557,6 +570,8 @@ Paste the connection string your provider gives you, optionally set a schema, an
 | Local | `postgresql://postgres:pass@localhost:5432/mydb` · `sqlite:///C:/data/shop.db` |
 
 JDBC strings and driver-less schemes are converted automatically; SSL is added for managed cloud Postgres hosts.
+
+**Snowflake and BigQuery without writing a URI:** every connection field (Analytics, Boards, Data chat, AutoML) has *Connect Snowflake or BigQuery with a form* (`frontend/components/WarehouseConnect.tsx`). Snowflake: account, user, password, warehouse, database, schema, role; each query stops after 60 seconds (`ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS`). BigQuery: upload the service-account JSON key once (`POST /api/connectors/bigquery-key` stores it in `data/secrets/bigquery/`, private) and the URI carries only `?key=<id>`; every query is capped at `BIGQUERY_MAX_BYTES_BILLED` (default 10 GiB, a URI may only lower it), and `credentials_path` is refused because it would read a file on the server.
 
 **Supabase:** the direct host `db.<project>.supabase.co` is IPv6-only and won't resolve on most IPv4 networks — use the **Session pooler** URI from *Supabase → Connect*. Note the user is `postgres.<project-ref>`, not `postgres`.
 
@@ -679,6 +694,8 @@ The app also has its own **Docs** page (rail → Docs) with guides for every app
 | `BILLING_ENFORCE` | | `false` records usage without blocking when the balance is short (default `true`) |
 | `SLACK_BOT_TOKEN` · `NOTION_TOKEN` · `AIRTABLE_TOKEN` | | App connectors; otherwise paste a token per import |
 | `GOOGLE_APPLICATION_CREDENTIALS` | | Service-account key for private Google Sheets / Drive files and BigQuery |
+| `BIGQUERY_MAX_BYTES_BILLED` | | Most bytes one BigQuery query may bill (default 10 GiB) |
+| `ANALYSIS_MAX_ROWS` | | Most rows the Analytics crew and chart tools load per table (default 2,000,000; lower it on a small machine) |
 | `GOOGLE_OAUTH_CLIENT_ID` · `GOOGLE_OAUTH_CLIENT_SECRET` | | *Connect Google* for Sheets / Drive |
 | `SLACK_CLIENT_ID` · `SLACK_CLIENT_SECRET` | | *Connect Slack* |
 | `OAUTH_REDIRECT_BASE` · `OAUTH_ENCRYPTION_KEY` | | Callback base URL (default `http://localhost:8002`) · key for stored tokens (generated if unset) |
@@ -766,7 +783,7 @@ Interactive docs at **http://localhost:8002/docs**. Every route needs a signed-i
 | `GET` | `/api/automl/uploads` | Structured files uploaded in this session |
 | `POST` | `/api/automl/datasets` | Load data: `file`, or `file_id` (+ `table`), or `db_uri` + `db_schema` + `table`; returns column profiles and suggested targets |
 | `GET` | `/api/automl/datasets/{id}` | A loaded dataset |
-| `POST` · `GET` | `/api/automl/jobs` | Train (`dataset_id`, `target`, `task` = auto / classification / regression, `exclude`; 30 credits) · list models |
+| `POST` · `GET` | `/api/automl/jobs` | Train (`dataset_id`, `target`, `task` = auto / classification / regression / forecast, `exclude`; for forecasts `date_column`, `horizon`, `frequency` = auto / D / W / MS / QS / YS, `agg` = sum / mean, target `__rows__` = row count; 30 credits) · list models |
 | `GET` · `DELETE` | `/api/automl/jobs/{id}` | Progress, leaderboard, held-out metrics, drivers, warnings, explanation · delete (and its deployed file) |
 | `POST` | `/api/automl/jobs/{id}/predict` | Predict one row (`row`), free |
 
@@ -892,11 +909,12 @@ Universal_AI_Analytics/
 - **Accounts share one wallet and one history:** everyone who signs in sees the same runs, chats, boards, models and credits; per-user and per-team separation isn't built yet.
 - **Demo checkout:** plan changes and top-ups don't take payment until a payment provider is connected.
 - **Plan schedule limits aren't enforced:** the plans list how many schedules they include, but Workflow and Deliver don't count them yet.
-- **One Analytics run at a time:** the run's database is a server-wide setting (`ACTIVE_DB_URI`), so a second run would share it; runs live in memory and are saved to JSON files.
+- **One Analytics run at a time:** each run's database is now private to the run, but its chart sidecar files and the tool ledger are still shared, so runs are queued; runs live in memory and are saved to JSON files.
 - dbt modelling and Airflow orchestration target **PostgreSQL** (including Supabase, Neon, RDS, Cloud SQL, Azure PostgreSQL).
 - **Deliver** sends the latest version of an existing report or deck; it doesn't re-run an Analytics run on a schedule. Email needs SMTP settings.
-- **AutoML** trains one model at a time, samples above 50,000 rows and compares fixed algorithm settings (no per-model tuning).
-- The crew's fallback *Clean table* / *Normalize types* tools read the first 10,000 rows, so on Ouroboros's own database they shorten a large table; dbt (the default on PostgreSQL) doesn't have this problem.
+- **AutoML** trains one model at a time, samples above 50,000 rows for classification / regression and compares fixed algorithm settings (no per-model tuning). Forecasts cover one series (no per-segment forecasts, holidays or outside drivers).
+- The crew loads whole tables into memory (up to `ANALYSIS_MAX_ROWS`); the first *Explore Data with Pandas* call on a table takes about 30 seconds while the sandbox starts.
+- Snowflake and BigQuery connections were tested for URI building, guards and dialect loading, not against live accounts.
 - Data chat's first question in a new chat is slow (library loading + sandbox start), and so is the first data overview; both are much faster afterwards.
 - The Agent can't use sites that block automated browsers (e.g. Shopee, Blibli) and can't log in anywhere. Its arithmetic in the written answer isn't checked against the numbers it computed.
 - App imports into Analytics, Boards, Data chat and the Agent are snapshots (import again to refresh); only Workflow's *App data* step fetches fresh data on every run.

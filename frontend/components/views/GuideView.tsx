@@ -24,7 +24,7 @@ Ouroboros is one desk with several apps that share the same data, credits and se
 | **Metrics** | You want one definition of "revenue" everywhere, or to check a file's quality | Business metric definitions used by every app, and a data-quality check with one-click fixes |
 | **Data chat** | You have a quick question about a file, database or app | Short answers with the SQL / Python behind them, tables, charts, follow-ups and a pinboard |
 | **Agent** | The task needs the web, documents or several sources | A plan you approve, then autonomous research and analysis, an answer with sources, and an editable report, deck or spreadsheet |
-| **AutoML** | You want to predict a column (churn, default, revenue…) | Several algorithms compared, the winner tested on unseen rows, what drives it in plain language, and a deployed model |
+| **AutoML** | You want to predict a column (churn, default, revenue…) or forecast a number over time | Several algorithms compared, the winner tested on unseen rows (or backtested), what drives it in plain language, and a deployed model or a forecast with its range |
 | **Workflow** | You want a repeatable automation | A canvas of 32 steps (sources → transforms → quality → ML → AI → outputs), built by hand or from a prompt, run once or on a schedule |
 | **Deliver** | People need a dashboard, report or deck regularly | Scheduled delivery by email, Slack, Teams or webhook, with KPI changes since the last send |
 | **Pricing** | Checking your balance or buying credits | Balance by bucket, plans, rate card, top-ups, spending controls, history |
@@ -96,6 +96,8 @@ docker compose up -d --build   # UI at http://localhost:8085
 | \`LLM_MAX_PROMPT_CHARS\` · \`LLM_MAX_CALLS_PER_MIN\` · \`LLM_DAILY_TOKEN_BUDGET\` · \`LLM_AUDIT\` | no | Limits of the Claude security checkpoint (900,000 · 150 · 0 = off · true) |
 | \`SLACK_BOT_TOKEN\` · \`NOTION_TOKEN\` · \`AIRTABLE_TOKEN\` | no | App connectors; without them, paste a token when importing |
 | \`GOOGLE_APPLICATION_CREDENTIALS\` | no | Service-account key for private Google Sheets / Drive files and BigQuery |
+| \`BIGQUERY_MAX_BYTES_BILLED\` | no | Most bytes one BigQuery query may bill (default 10 GiB) |
+| \`ANALYSIS_MAX_ROWS\` | no | Most rows the Analytics crew loads per table (default 2,000,000) |
 | \`GOOGLE_OAUTH_CLIENT_ID\` · \`GOOGLE_OAUTH_CLIENT_SECRET\` · \`SLACK_CLIENT_ID\` · \`SLACK_CLIENT_SECRET\` | no | *Connect Google* / *Connect Slack* sign-in for the connectors |
 | \`OAUTH_REDIRECT_BASE\` · \`OAUTH_ENCRYPTION_KEY\` | no | OAuth callback base (default \`http://localhost:8002\`) · key for stored tokens (generated if unset) |
 `,
@@ -273,6 +275,13 @@ The **first question** in a new chat is the slowest (the backend loads its libra
     body: `
 Paste a connection string in Analytics, Boards, Data chat, the Agent, AutoML or a Workflow database step. PostgreSQL, MySQL, SQL Server, Oracle, Redshift, Snowflake, BigQuery and DuckDB are recognised, and so are provider URIs, JDBC and ODBC-style strings; the connection is tested first.
 
+### Snowflake and BigQuery
+
+Click **Connect Snowflake or BigQuery with a form** under the connection field.
+
+- **Snowflake:** account identifier (\`orgname-accountname\`), user, password, warehouse, database, schema and an optional role. Use a role that can only SELECT; each query stops after 60 seconds.
+- **BigQuery:** upload the service account's JSON key (Google Cloud → IAM → Service accounts → Keys → Add key → JSON), then the project and dataset. Give the account *BigQuery Data Viewer* and *BigQuery Job User*. The key is stored on the server and the connection string only carries \`?key=…\`. Each query is capped at 10 GiB billed (\`BIGQUERY_MAX_BYTES_BILLED\`).
+
 \`\`\`text
 postgresql://USER:PASSWORD@HOST:5432/DATABASE
 \`\`\`
@@ -367,8 +376,8 @@ The Agent is an autonomous worker: you give it a goal, it plans, then it works o
     body: `
 **AutoML** turns a table into a working prediction model without code.
 
-1. **Load the data**: upload a file (CSV, Excel, Parquet, Feather, JSON), pick a file already uploaded in Analytics, or read a database table. Databases are read with one validated \`SELECT\` in a read-only transaction; nothing is changed. Up to 200,000 rows are read.
-2. **Pick what to predict.** Suggested columns come first. Choose *Decide for me*, *A category* (yes/no, status, segment) or *A number* (amount, price).
+1. **Load the data**: upload a file (CSV, Excel, Parquet, Feather, JSON), pick a file already uploaded in Analytics, import one **from an app** (Google Sheets, Drive, Airtable, Notion, Slack, a file URL), or read a database table (Snowflake and BigQuery included). Databases are read with one validated \`SELECT\` in a read-only transaction; nothing is changed. Up to 1,000,000 rows are read.
+2. **Pick what to predict.** Suggested columns come first. Choose *Decide for me*, *A category* (yes/no, status, segment), *A number* (amount, price) or *A number over time* (a forecast, below).
 3. **Leave out columns that are known only after the outcome** (for loan status: days past due, collectibility). They make a model look much better than it will be on new cases.
 4. **Train models · 30 credits** (refunded if it fails; about a minute).
 
@@ -386,6 +395,14 @@ The Agent is an autonomous worker: you give it a goal, it plans, then it works o
 - **Try a prediction**: change any input and predict, free.
 - The model is **deployed** as \`automl_<column>\`: score a whole file in *Analytics → Model lab* or with \`POST /api/predict\`.
 - Training runs one at a time; more than 50,000 rows are sampled. Deleting a model also removes its deployed file.
+
+### Forecasting a number over time
+
+1. Choose **A number over time (forecast)**.
+2. Pick the **date column**, the **number to forecast** (or **Number of rows** to forecast orders, tickets or transactions), the period (*Decide from the dates*, day, week, month, quarter or year), how many **periods ahead** (default 30 days, 12 weeks, 6 months, 4 quarters or 3 years) and whether rows are **summed** (sales) or **averaged** (prices, rates).
+3. **Forecast · 30 credits.** Every row is grouped into periods; a period that isn't finished yet is left out.
+
+Seven methods (naive, seasonal naive, drift, Holt-Winters, Theta, ARIMA and gradient boosting) each forecast the last periods from up to three earlier cut-offs and are compared with what really happened. The leaderboard shows the **average error per period (MAE, lower is better)**; the winner's card adds the error as a percentage (sMAPE) and MASE (below 1 = better than repeating last cycle). You get a chart with the **≈80% range** (from the winner's own backtest errors), a table, a CSV download, the trend and seasonality in plain words, and a Claude explanation.
 `,
   },
   {
@@ -483,6 +500,7 @@ Manual editing, presenting and exporting are free; each AI edit costs 3 credits 
 
 - **Data chat and the Agent** reach data only through a read-only **FastMCP** server. Every SQL statement is parsed (sqlglot) and rejected unless it is a single \`SELECT\`: no writes, DDL, \`SELECT INTO\`, row locks, multiple statements, dangerous functions (\`pg_sleep\`, \`dblink\`, \`pg_read_file\`…) or credential/system tables. Accepted queries run in a \`READ ONLY\` transaction with a timeout.
 - **Boards, Metrics, Workflow, AutoML and the Analytics crew** use the same SQL guard directly, with read-only transactions and timeouts.
+- **Claude reads a profile, not your table:** the Analytics crew computes on every row, but Claude sees only the first 20 rows (personal data masked) plus pandas statistics over all rows; to learn more it runs its own pandas code over the full table in the same sandbox as Data chat, and only results come back. Query results return at most 20 rows.
 - **Table and column names chosen by the AI** are checked against the database's real tables and columns before they are used.
 - **Your tables are never overwritten:** on a database you connected, the Analytics crew may create tables but never replaces or appends to one that was already there (it writes \`<name>_uaa\` instead). The tables it created are remembered per database (without credentials).
 - AI-written code (charts, Data chat, Agent) runs in separate sandboxed processes with no file, network or OS access and no secrets in the environment. The Analytics ETL step can only read CSV files inside the workspace's \`data/\` and \`outputs/\` folders.
@@ -632,7 +650,8 @@ Interactive docs: **http://localhost:8002/docs**. All routes need a signed-in se
 | GET | \`/api/automl/uploads\` | Structured files uploaded in this session |
 | POST | \`/api/automl/datasets\` | Load data (\`file\`, or \`file_id\` [+ \`table\`], or \`db_uri\` + \`db_schema\` + \`table\`); returns column profiles and suggested targets |
 | GET | \`/api/automl/datasets/{id}\` | A loaded dataset |
-| POST · GET | \`/api/automl/jobs\` | Train (\`dataset_id\`, \`target\`, \`task\` auto/classification/regression, \`exclude\`) · list models |
+| POST · GET | \`/api/automl/jobs\` | Train (\`dataset_id\`, \`target\`, \`task\` auto/classification/regression/forecast, \`exclude\`; forecasts add \`date_column\`, \`horizon\`, \`frequency\`, \`agg\`) · list models |
+| POST | \`/api/connectors/bigquery-key\` | Store a BigQuery service-account key; returns \`key_id\` for \`bigquery://project/dataset?key=…\` |
 | GET · DELETE | \`/api/automl/jobs/{id}\` | Progress, leaderboard, held-out metrics, drivers, explanation · delete (and its deployed file) |
 | POST | \`/api/automl/jobs/{id}/predict\` | Predict one row (\`row\`) |
 | GET · POST | \`/api/models\` · \`/api/predict\` | All trained models · score a file with one |
@@ -684,10 +703,10 @@ The same API under \`/api/agent/tasks/{id}/studio\`, \`/api/runs/{run}/studio/{a
 - **Accounts share one wallet and one history:** everyone who signs in sees the same runs, chats, boards and credits. Per-user and per-team separation is not built yet.
 - **Demo checkout:** plan changes and top-ups don't take payment until a payment provider is connected.
 - **Plan limits on schedules are not enforced** yet: the plans list how many schedules they include, but Workflow and Deliver don't count them.
-- **One Analytics run at a time** (the run's database is a server-wide setting); runs are kept in memory and saved to JSON files.
+- **One Analytics run at a time:** each run's database is private to it, but chart files and the tool ledger are still shared, so runs queue; runs are kept in memory and saved to JSON files.
 - dbt modelling and Airflow orchestration target **PostgreSQL** (including Supabase, Neon, RDS, Cloud SQL, Azure PostgreSQL).
 - **Deliver** sends the latest version of an existing report or deck; it does not re-run an Analytics run on a schedule. Email needs SMTP settings in \`.env\`.
-- **AutoML** trains one model at a time and samples above 50,000 rows; it compares fixed algorithm settings rather than tuning each one.
+- **AutoML** trains one model at a time and samples above 50,000 rows for categories and numbers; it compares fixed algorithm settings rather than tuning each one. Forecasts cover one series (no per-segment forecasts, holidays or outside drivers).
 - Data chat's first question in a new chat is slow (library loading + sandbox start); follow-ups are much faster.
 - The Agent can't use sites that block automated browsers (e.g. Shopee, Blibli) and can't log in anywhere.
 - App imports are snapshots (import again to refresh); only Workflow's *App data* step fetches fresh data on every run.

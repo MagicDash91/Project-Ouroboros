@@ -38,6 +38,7 @@ from tools.bank_engineer import (
     run_etl_pipeline,
     list_database_tables,
     query_database,
+    explore_data_with_pandas,
     clean_table_columns,
     normalize_column_dtypes,
     build_dbt_models,
@@ -125,6 +126,7 @@ def _build_analytics_agents() -> dict:
             run_etl_pipeline,
             list_database_tables,
             query_database,
+            explore_data_with_pandas,
             clean_table_columns,
             normalize_column_dtypes,
         ],
@@ -168,6 +170,7 @@ def _build_analytics_agents() -> dict:
                 customer_segmentation,
             )),
             query_database,
+            explore_data_with_pandas,
             list_database_tables,
         ],
         allow_delegation=False,
@@ -197,6 +200,7 @@ def _build_analytics_agents() -> dict:
             label_encode_table,
             list_database_tables,
             query_database,
+            explore_data_with_pandas,
         ],
         allow_delegation=False,
         verbose=True,
@@ -231,6 +235,7 @@ def _build_analytics_agents() -> dict:
             generate_pdf_report,
             generate_ppt_report,
             query_database,
+            explore_data_with_pandas,
             list_database_tables,
         ],
         allow_delegation=False,
@@ -281,20 +286,25 @@ def _build_analytics_tasks(agents: dict, analysis_request: str, langgraph_plan: 
             "═══════════════════════════════════════════════════════════\n"
             "   Tool: profile_database_table\n"
             "   Action Input: <primary_table_name>   ← plain string, ONE call only\n"
-            "   Goal: Get row count, column names, dtypes, null counts, and sample values.\n"
+            "   Goal: Row count, dtypes, nulls, unique counts, value counts and numeric stats over\n"
+            "         ALL rows, plus the first 20 rows.\n"
             "   Document: How many rows? How many columns? Any columns with >20% nulls?\n"
             "             Which columns are numeric? Which are categorical?\n"
             "             What is the likely target/outcome column?\n\n"
 
             "═══════════════════════════════════════════════════════════\n"
-            "STEP 3 — SAMPLE: Inspect actual data\n"
+            "STEP 3 — UNDERSTAND: explore the FULL table with pandas\n"
             "═══════════════════════════════════════════════════════════\n"
-            "   Tool: query_database   ← call ONCE per query; NEVER pass a JSON array\n"
-            "   Run these queries one at a time (separate tool calls):\n"
-            "     a) SELECT * FROM <primary_table> LIMIT 5\n"
-            "        → See real values, confirm column names and types\n"
-            "     b) SELECT <target_col>, COUNT(*) FROM <primary_table> GROUP BY <target_col>\n"
-            "        → Understand the distribution of the target/outcome column\n\n"
+            "   The profile already shows the first 20 rows and pandas facts over ALL rows.\n"
+            "   Tool: explore_data_with_pandas (table_name, code) — df is the whole table.\n"
+            "   Run 2-4 short calls, one question each, for example:\n"
+            "     a) df['<target_col>'].value_counts(normalize=True)\n"
+            "        → distribution of the target/outcome column\n"
+            "     b) df.groupby('<key_category>')['<key_number>'].agg(['count','mean','sum'])\n"
+            "        → how the main segments differ\n"
+            "     c) df['<column>'].unique()[:30]  or  pd.crosstab(df['a'], df['b'])\n"
+            "        → check categories and relationships you rely on later\n"
+            "   Never read raw rows beyond the 20 in the profile; compute what you need.\n\n"
 
             "═══════════════════════════════════════════════════════════\n"
             "STEP 4 — USE THE DBT MARTS (built by the pipeline before you started)\n"

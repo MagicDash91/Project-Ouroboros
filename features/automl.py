@@ -15,6 +15,10 @@ models, explains the winner in plain language and deploys it for /api/predict.
   3. The winner is refit on all rows and saved in outputs/models/ as automl_<target>_<ts>.joblib –
      /api/models lists it and /api/predict scores files with it (features/scoring.py).
 
+Forecasting (task "forecast": a date column, a number or the row count, a horizon) is handled by
+features/automl_forecast.py: backtested statistical + ML methods, an ≈80% range, saved under
+outputs/models/forecasts/.
+
 One training runs at a time (this machine is small); others wait in the queue.
 """
 
@@ -38,7 +42,7 @@ DS_DIR = DATA / "datasets"
 JOB_DIR = DATA / "jobs"
 MODELS_DIR = ROOT / "outputs" / "models"
 
-MAX_ROWS = 200_000          # rows read from a source
+MAX_ROWS = 1_000_000        # rows read from a source (forecasts aggregate all of them)
 TRAIN_ROWS = 50_000         # rows used for training (random sample above this)
 MIN_ROWS = 30
 MAX_CLASSES = 20
@@ -209,6 +213,7 @@ def create_dataset(files: Optional[list] = None, db_uri: str = "", db_schema: st
     cols = _profile(df)
     meta = {"id": did, "label": label[:120], "source": source, "rows": int(len(df)), "columns": cols,
             "suggested_targets": _suggest_targets(cols, len(df)), "created_at": _now(),
+            "date_columns": [c["name"] for c in cols if c["kind"] == "datetime"],
             "truncated": len(df) >= MAX_ROWS}
     (d / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     return meta
@@ -364,20 +369,36 @@ def _public(job: dict) -> dict:
     return {k: v for k, v in job.items() if k != "charge_id"}
 
 
-def start_job(dataset_id: str, target: str, task: str = "auto", exclude: Optional[list] = None) -> dict:
+def start_job(dataset_id: str, target: str, task: str = "auto", exclude: Optional[list] = None,
+              date_column: str = "", horizon: int = 0, frequency: str = "auto", agg: str = "sum") -> dict:
     from features import billing
+    from features.automl_forecast import COUNT, FREQS
     meta = get_dataset(dataset_id)
     names = [c["name"] for c in meta["columns"]]
-    if target not in names:
+    if task not in ("auto", "classification", "regression", "forecast"):
+        raise AutoMLError("Kind of prediction must be auto, classification, regression or forecast.")
+    if target not in names and not (task == "forecast" and target == COUNT):
         raise AutoMLError(f"'{target}' is not a column of this dataset.")
     exclude = [c for c in (exclude or []) if c in names and c != target]
+    spec = None
+    if task == "forecast":
+        if date_column not in names or date_column == target:
+            raise AutoMLError("Pick the date column the forecast runs along.")
+        if frequency not in ("auto", *FREQS):
+            raise AutoMLError("Frequency must be auto, D, W, MS, QS or YS.")
+        spec = {"date_column": date_column, "horizon": max(0, min(int(horizon or 0), 366)),
+                "frequency": frequency, "agg": "mean" if agg == "mean" else "sum"}
+        exclude = []
     jid = uuid.uuid4().hex[:12]
     job = {"id": jid, "dataset_id": dataset_id, "dataset_label": meta["label"], "target": target,
            "task_requested": task, "task": None, "exclude": exclude, "status": "queued",
            "stage": "Waiting for the previous training to finish…", "progress": [], "leaderboard": [],
            "best": None, "holdout": None, "drivers": [], "explanation": None, "warnings": [], "dropped": {},
            "model_file": None, "rows_used": None, "created_at": _now(), "finished_at": None, "error": ""}
-    job["charge_id"] = billing.charge("automl_train", ref=jid, note=f"AutoML · predict {target[:40]}")
+    if spec:
+        job["forecast_spec"] = spec
+    what = "forecast" if spec else "predict"
+    job["charge_id"] = billing.charge("automl_train", ref=jid, note=f"AutoML · {what} {target[:40]}")
     with _lock:
         _jobs[jid] = job
     _save(job)
@@ -395,13 +416,32 @@ def _run(job: dict):
     with _train_slot:
         job["status"] = "running"
         try:
-            _train(job)
+            _train_forecast(job) if job.get("forecast_spec") else _train(job)
             job.update(status="completed", stage="Done", finished_at=_now())
         except Exception as e:                                       # noqa: BLE001
+            from features.automl_forecast import ForecastError
+            plain = isinstance(e, (AutoMLError, ForecastError))
             job.update(status="failed", stage="Failed", finished_at=_now(),
-                       error=str(e)[:400] if isinstance(e, AutoMLError) else f"Training failed: {str(e)[:300]}")
+                       error=str(e)[:400] if plain else f"Training failed: {str(e)[:300]}")
             billing.refund(job.get("charge_id"), f"AutoML failed: {job['error'][:80]}")
         _save(job)
+
+
+def _train_forecast(job: dict):
+    """Forecast jobs: every loaded row is aggregated into a series (features/automl_forecast.py)."""
+    import joblib
+    from features import automl_forecast as af
+    _stage(job, "Reading the data…")
+    df = pd.read_parquet(DS_DIR / job["dataset_id"] / "data.parquet")
+    art = af.train(job, df, _stage, _save)
+    sub = MODELS_DIR / "forecasts"
+    sub.mkdir(parents=True, exist_ok=True)
+    fname = f"automl_forecast_{af.slug(job['target'])}_{datetime.now():%Y%m%d_%H%M%S}.joblib"
+    joblib.dump(art, sub / fname)
+    job["model_file"] = f"forecasts/{fname}"
+    job["model_ref"] = fname[:-7]
+    _stage(job, "Writing the explanation…")
+    job["explanation"] = af.explain(job)
 
 
 def _train(job: dict):
@@ -732,7 +772,7 @@ def list_jobs() -> list:
         except Exception:
             continue
         out.append({k: j.get(k) for k in ("id", "dataset_label", "target", "task", "status", "created_at",
-                                          "finished_at", "model_file", "metric")} |
+                                          "finished_at", "model_file", "metric", "lower_is_better")} |
                    {"score": (j.get("best") or {}).get("score"), "algorithm": (j.get("best") or {}).get("name")})
     return out
 
@@ -743,6 +783,8 @@ def predict_row(jid: str, row: dict) -> dict:
     job = get_job(jid)
     if not job.get("model_file"):
         raise AutoMLError("This job has no trained model yet.")
+    if job.get("task") == "forecast":
+        return {"target": job["target"], "forecast": (job.get("forecast") or {}).get("forecast", [])}
     art = joblib.load(MODELS_DIR / job["model_file"])
     X = prepare_features(pd.DataFrame([row]), art)
     model = art["model"]

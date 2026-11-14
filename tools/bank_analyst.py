@@ -32,8 +32,9 @@ from config import POSTGRES_URI, query_ollama as query_nvidia
 
 
 def _get_db_uri() -> str:
-    """Return the active database URI (set per-run via ACTIVE_DB_URI env var)."""
-    return os.environ.get("ACTIVE_DB_URI") or POSTGRES_URI
+    """Return the active database URI (this run's database; see tools/run_context.py)."""
+    from tools.run_context import current_db
+    return current_db()
 
 sns.set_theme(style="whitegrid", palette="husl")
 
@@ -233,7 +234,8 @@ def generate_visualization(
 
     try:
         engine = create_engine(_get_db_uri())
-        df = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
+        from tools.data_profile import load_table
+        df = load_table(engine, table_name)[0]     # every row, not a sample
 
         fig, ax = plt.subplots(figsize=(12, 7))
         auto_title = title or f"{chart_type.title()}: {y_column or x_column} by {x_column}"
@@ -334,7 +336,8 @@ def generate_dashboard(table_name: str) -> str:
     """
     try:
         engine = create_engine(_get_db_uri())
-        df   = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
+        from tools.data_profile import load_table
+        df   = load_table(engine, table_name)[0]     # every row, not a sample
         nums = df.select_dtypes(include=np.number).columns.tolist()
 
         if len(nums) < 2:
@@ -509,7 +512,8 @@ def label_encode_table(table_name: str) -> str:
     try:
         dest   = f"{table_name.split('.')[-1].strip(chr(34))}_encoded"
         engine = create_engine(_get_db_uri())
-        df     = pd.read_sql(f"SELECT * FROM {safe_table(engine, table_name)} LIMIT 10000", engine)
+        from tools.data_profile import load_table
+        df     = load_table(engine, table_name)[0]     # every row, not a sample
 
         # Dates are not categories: turn date/datetime columns into "days since the first date"
         # so correlations stay meaningful, instead of label-encoding them.

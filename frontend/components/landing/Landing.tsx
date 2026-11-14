@@ -192,6 +192,26 @@ const APPS: AppItem[] = [
     cost: "free",
     out: { title: "Repeat rate", body: "Customers with two or more orders, divided by all customers.", tag: "Used by 4 apps · quality 92" },
   },
+  {
+    key: "automl",
+    name: "AutoML",
+    disc: "bg-[#E8DFCF]",
+    art: "/art/automl.jpg",
+    artAlt: "Odilon Redon, The Cyclops",
+    fact: "Pick a column to predict, or a number to forecast. Up to seven models are compared and tested on data they never saw, the winner is explained in plain words and deployed.",
+    cost: "30 credits a model",
+    out: { title: "Weekly orders, next 8 weeks", body: "4,329 orders expected, +10.9% on the last 8 weeks. Off by 3.7% in backtests.", tag: "Holt-Winters won · range shaded" },
+  },
+  {
+    key: "deliver",
+    name: "Deliver",
+    disc: "bg-[#D8CFC1]",
+    art: "/art/deliver.jpg",
+    artAlt: "Odilon Redon, The Boat",
+    fact: "Send a board, report or deck by email, Slack, Teams or webhook every day, week or month, with the KPI changes since the last send written on top.",
+    cost: "free",
+    out: { title: "Sales overview → #leadership", body: "Revenue +4.2% since last Monday; repeat rate −0.6 pts.", tag: "Every Monday 08:00 · PPTX attached" },
+  },
 ];
 
 function Apps() {
@@ -202,7 +222,7 @@ function Apps() {
       <div className="mx-auto grid max-w-[1440px] grid-cols-[minmax(0,1fr)] gap-12 px-5 py-24 sm:px-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-center lg:gap-16 lg:py-[140px]">
         <div className="order-2 lg:order-1">
           <h2 id="apps-h" className="mb-8 hidden font-serif text-[clamp(40px,4vw,60px)] leading-[1.05] text-ink lg:block">
-            Six ways to work
+            Eight ways to work
           </h2>
           <ul className="flex flex-wrap gap-x-6 gap-y-1 lg:block" role="tablist" aria-label="Apps">
             {APPS.map((x, i) => (
@@ -232,7 +252,7 @@ function Apps() {
 
         <div className="order-1 lg:order-2">
           <h2 className="mb-6 font-serif text-[34px] leading-tight text-ink lg:hidden" aria-hidden="true">
-            Six ways to work
+            Eight ways to work
           </h2>
           <div id="app-stage" role="tabpanel" aria-label={a.name} className="relative mx-auto aspect-square w-[min(86vw,640px)] lg:w-[min(72vh,40vw)]">
             <div key={`d-${a.key}`} className={`loop-in absolute inset-0 rounded-full ${a.disc}`} />
@@ -316,7 +336,8 @@ const SOURCES: { name: string; logo: string; color: string; note: string }[] = [
   { name: "PostgreSQL", logo: "postgresql", color: "#4169E1", note: "Read-only; dbt builds in its own schema" },
   { name: "MySQL", logo: "mysql", color: "#4479A1", note: "Read-only queries, scheduled refreshes" },
   { name: "SQL Server", logo: "microsoftsqlserver", color: "#CC2927", note: "JDBC, Azure or ODBC strings converted" },
-  { name: "BigQuery", logo: "googlebigquery", color: "#669DF6", note: "Any dataset, with a service-account key" },
+  { name: "BigQuery", logo: "googlebigquery", color: "#669DF6", note: "Upload the key once; every query capped at 10 GiB billed" },
+  { name: "Snowflake", logo: "snowflake", color: "#29B5E8", note: "Fill in a form; read-only role, 60-second query limit" },
   { name: "Redshift", logo: "amazonredshift", color: "#8C4FFF", note: "Warehouse queries, dbt models and tests" },
   { name: "Supabase", logo: "supabase", color: "#3ECF8E", note: "Paste the Postgres connection string" },
   { name: "Excel", logo: "microsoftexcel", color: "#217346", note: "Every sheet read, typed and joined" },
@@ -327,6 +348,9 @@ const SOURCES: { name: string; logo: string; color: string; note: string }[] = [
   { name: "DuckDB", logo: "duckdb", color: "#181613", note: "Point it at a .duckdb database file" },
   { name: "Google Drive", logo: "googledrive", color: "#4285F4", note: "Import a shared CSV or Excel file" },
   { name: "Airtable", logo: "airtable", color: "#18BFFF", note: "A base's table, rows and fields" },
+  { name: "MariaDB", logo: "mariadb", color: "#003545", note: "Same read-only rules as MySQL" },
+  { name: "Amazon RDS", logo: "amazonrds", color: "#527FFF", note: "Postgres or MySQL; SSL added for you" },
+  { name: "CockroachDB", logo: "cockroachlabs", color: "#6933FF", note: "Postgres-compatible, read-only queries" },
 ];
 
 function Logo({ name, color, className = "" }: { name: string; color: string; className?: string }) {
@@ -350,8 +374,8 @@ function Sources() {
               Your data, wherever it lives
             </h2>
             <p className="mt-4 max-w-[46ch] text-[16px] leading-snug">
-              Paste any connection string (URL, JDBC, Azure or ODBC) and it is converted, secured and tested. Or upload CSV, Excel, Parquet or
-              JSON: every Excel sheet is read and understood.
+              Paste any connection string (URL, JDBC, Azure or ODBC) and it is converted, secured and tested, or connect Snowflake and BigQuery
+              with a short form. Or upload CSV, Excel, Parquet or JSON: every Excel sheet is read and understood.
             </p>
           </div>
           {SOURCES.map((s) => (
@@ -377,6 +401,8 @@ const TRUST = [
   { title: "Injection screening", body: "Instructions hidden in your data or in web pages the Agent reads are flagged and treated as data, never obeyed." },
   { title: "Sandboxed code", body: "AI-written Python runs in a separate, locked-down process with no access to your keys." },
   { title: "Every number shows its work", body: "See the SQL and Python behind each answer. Failed or stopped work is refunded." },
+  { title: "The AI reads a profile, not your table", body: "Agents compute on every row, but the model is sent 20 rows and statistics. Anything more it works out with pandas, and only the result comes back." },
+  { title: "Warehouse bills stay bounded", body: "Every BigQuery query is capped at 10 GiB billed and Snowflake queries stop after a minute, so a curious agent can't run up your cloud bill." },
 ];
 
 /** The masking, shown: a customer table as the AI receives it, plus one screened instruction. */
@@ -480,6 +506,7 @@ const ROWS: { group: string; items: [string, Mark[]][] }[] = [
     group: "Machine learning",
     items: [
       ["Forecasting, segmentation, classifiers", ["y", "y", "p", "y", "p", "y"]],
+      ["AutoML: models compared, explained and deployed", ["y", "p", "n", "p", "n", "y"]],
       ["Drivers (SHAP) and what-if scenarios", ["y", "p", "n", "p", "n", "p"]],
       ["Drift monitoring", ["y", "n", "n", "n", "n", "y"]],
     ],
@@ -490,6 +517,7 @@ const ROWS: { group: string; items: [string, Mark[]][] }[] = [
       ["Automatic interactive dashboard", ["y", "n", "p", "n", "y", "y"]],
       ["PDF and PowerPoint reports", ["y", "p", "y", "p", "n", "n"]],
       ["Marketing strategy and content from the insights", ["y", "n", "y", "p", "n", "n"]],
+      ["Scheduled delivery to email, Slack or Teams", ["y", "p", "p", "p", "y", "y"]],
     ],
   },
   {

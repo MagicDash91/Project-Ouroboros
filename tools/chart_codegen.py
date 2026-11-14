@@ -34,7 +34,7 @@ from tools.chart_runner import check_code
 BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNNER      = os.path.join(BASE_DIR, "tools", "chart_runner.py")
 MAX_CHARTS  = 6
-MAX_ROWS    = 50000
+MAX_ROWS    = int(os.environ.get("ANALYSIS_MAX_ROWS", "2000000"))   # every row (same cap as tools/data_profile.py)
 RUN_TIMEOUT = 300           # seconds for the whole sandbox session
 LIBRARIES   = ["plotly", "altair", "bokeh", "matplotlib", "seaborn"]
 # Only what Python, matplotlib and Kaleido need — no API keys or database URIs.

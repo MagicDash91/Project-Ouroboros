@@ -6,6 +6,7 @@ import { errorText, formatBytes, postForm, postJSON } from "@/lib/api";
 import type { DbTestResult, RunRequest, UploadedFile } from "@/lib/types";
 import { onIntent } from "@/lib/intent";
 import { AppConnectors } from "./AppConnectors";
+import { WarehouseConnect } from "./WarehouseConnect";
 import { QualityReport, type Quality } from "./views/MetricsView";
 import { useToast } from "./Overlays";
 import { Button, Field, Toggle, cx } from "./ui";
@@ -76,6 +77,7 @@ function DatabaseSource({
           className="field font-mono text-[12px]"
           spellCheck={false}
         />
+        <WarehouseConnect className="mt-1.5" onUri={(u) => { setUri(u); setResult(null); }} />
       </Field>
       <div className="flex items-center gap-2">
         <input

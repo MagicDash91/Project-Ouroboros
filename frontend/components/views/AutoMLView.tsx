@@ -6,9 +6,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { del, errorText, getJSON, postForm, postJSON } from "@/lib/api";
 import { cx } from "@/components/ui";
+import { AppConnectors } from "@/components/AppConnectors";
+import { WarehouseConnect } from "@/components/WarehouseConnect";
 
 interface Column { name: string; kind: string; unique: number; missing_pct: number; sample: string[] }
-interface Dataset { id: string; label: string; rows: number; columns: Column[]; suggested_targets: string[]; truncated?: boolean }
+interface Dataset { id: string; label: string; rows: number; columns: Column[]; suggested_targets: string[]; truncated?: boolean; date_columns?: string[] }
 interface Upload { file_id: string; name: string; tables: string[]; rows?: number }
 interface BoardRow { name: string; baseline?: boolean; score: number; score_std: number; seconds: number; [k: string]: unknown }
 interface Driver {
@@ -24,8 +26,17 @@ interface Job {
   drivers: Driver[]; warnings: string[]; dropped: Record<string, string>; model_file: string | null; model_ref?: string;
   explanation: { headline: string; summary: string; drivers: string[]; actions: string[]; caveats: string[]; source: string } | null;
   inputs?: Field[]; rows_used?: number; error: string; created_at: string;
+  lower_is_better?: boolean; series?: Series; forecast?: Forecast;
 }
-interface JobRow { id: string; dataset_label: string; target: string; status: string; created_at: string; score?: number; algorithm?: string; metric?: string }
+interface Series { frequency: string; label: string; periods: number; horizon: number; agg: string; date_column: string; start: string; end: string }
+interface FcPoint { date: string; value: number; lo?: number; hi?: number }
+interface Forecast { history: FcPoint[]; forecast: FcPoint[]; range: string }
+interface JobRow { id: string; dataset_label: string; target: string; status: string; created_at: string; score?: number; algorithm?: string; metric?: string; task?: string | null }
+
+const ROWS = "__rows__";   // forecast target: number of rows per period
+const targetName = (t: string) => (t === ROWS ? "number of rows" : t);
+const jobTitle = (task: string | null | undefined, target: string) =>
+  task === "forecast" ? `Forecast ${targetName(target)}` : `Predict ${target}`;
 
 const field = "w-full border border-rule bg-white px-2 py-1.5 text-[13px] outline-none focus:border-ink";
 const btn = "bg-ink px-4 py-1.5 text-[12px] font-medium text-paper hover:bg-signal disabled:opacity-40";
@@ -49,7 +60,7 @@ export function AutoMLView() {
             <li key={j.id}>
               <button onClick={() => setOpenId(j.id)}
                 className={cx("w-full border-l-2 px-2 py-1.5 text-left text-[12.5px] hover:bg-sheet", openId === j.id ? "border-signal bg-sheet" : "border-transparent")}>
-                <span className="block truncate font-medium text-ink">Predict {j.target}</span>
+                <span className="block truncate font-medium text-ink">{jobTitle(j.task, j.target)}</span>
                 <span className="block truncate text-[11px] text-graphite">
                   {j.dataset_label} · {j.status === "completed" ? `${j.algorithm} ${num(j.score)}` : j.status}
                 </span>
@@ -74,7 +85,7 @@ export function AutoMLView() {
 // ── Step 1 + 2: data, target, train ──────────────────────────────────────────
 
 function NewModel({ onStarted }: { onStarted: (id: string) => void }) {
-  const [src, setSrc] = useState<"file" | "upload" | "db">("file");
+  const [src, setSrc] = useState<"file" | "upload" | "app" | "db">("file");
   const [file, setFile] = useState<File | null>(null);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [uploadId, setUploadId] = useState("");
@@ -84,10 +95,12 @@ function NewModel({ onStarted }: { onStarted: (id: string) => void }) {
   const [target, setTarget] = useState("");
   const [task, setTask] = useState("auto");
   const [exclude, setExclude] = useState<string[]>([]);
+  const [fc, setFc] = useState({ date_column: "", horizon: 0, frequency: "auto", agg: "sum" });
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
 
-  useEffect(() => { getJSON<Upload[]>("/api/automl/uploads").then(setUploads).catch(() => {}); }, []);
+  const loadUploads = useCallback(() => getJSON<Upload[]>("/api/automl/uploads").then(setUploads).catch(() => {}), []);
+  useEffect(() => { loadUploads(); }, [loadUploads]);
 
   const load = async () => {
     setErr(""); setBusy("Reading the data…");
@@ -98,6 +111,9 @@ function NewModel({ onStarted }: { onStarted: (id: string) => void }) {
     try {
       const d = await postForm<Dataset>("/api/automl/datasets", f);
       setDs(d); setTarget(d.suggested_targets[0] || ""); setExclude([]);
+      const dates = d.date_columns?.length ? d.date_columns : d.columns.filter((c) => c.kind === "datetime").map((c) => c.name);
+      setFc((f) => ({ ...f, date_column: dates[0] || "" }));
+      setTask("auto");
     } catch (e) { setErr(errorText(e)); }
     setBusy("");
   };
@@ -106,13 +122,24 @@ function NewModel({ onStarted }: { onStarted: (id: string) => void }) {
     if (!ds || !target) return;
     setErr(""); setBusy("Starting…");
     try {
-      const j = await postJSON<Job>("/api/automl/jobs", { dataset_id: ds.id, target, task, exclude });
+      const body = task === "forecast"
+        ? { dataset_id: ds.id, target, task, ...fc }
+        : { dataset_id: ds.id, target, task, exclude };
+      const j = await postJSON<Job>("/api/automl/jobs", body);
       onStarted(j.id);
     } catch (e) { setErr(errorText(e)); setBusy(""); }
   };
 
   const canLoad = (src === "file" && !!file) || (src === "upload" && !!uploadId) || (src === "db" && !!db.uri && !!db.table);
   const targetCol = ds?.columns.find((c) => c.name === target);
+  const forecasting = task === "forecast";
+  const numericCols = ds?.columns.filter((c) => c.kind === "numeric" && c.name !== fc.date_column) || [];
+  const dateCols = ds ? (ds.date_columns?.length ? ds.date_columns : ds.columns.filter((c) => c.kind === "datetime").map((c) => c.name)) : [];
+  const pickTask = (t: string) => {
+    setTask(t);
+    if (t === "forecast" && ds && !numericCols.some((c) => c.name === target)) setTarget(numericCols[0]?.name || ROWS);
+    if (t !== "forecast" && target === ROWS) setTarget(ds?.suggested_targets[0] || "");
+  };
 
   return (
     <>
@@ -125,7 +152,7 @@ function NewModel({ onStarted }: { onStarted: (id: string) => void }) {
       <section className="mt-6 border border-rule bg-white p-5">
         <h3 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-ink">1 · Data</h3>
         <div className="mt-3 flex gap-5 border-b border-rule">
-          {([["file", "Upload a file"], ["upload", "An uploaded file"], ["db", "A database table"]] as const).map(([k, l]) => (
+          {([["file", "Upload a file"], ["upload", "An uploaded file"], ["app", "From an app"], ["db", "A database table"]] as const).map(([k, l]) => (
             <button key={k} onClick={() => setSrc(k)}
               className={cx("-mb-px border-b-2 py-2 text-[13px]", src === k ? "border-ink font-medium text-ink" : "border-transparent text-graphite hover:text-ink")}>
               {l}
@@ -151,10 +178,17 @@ function NewModel({ onStarted }: { onStarted: (id: string) => void }) {
               )}
             </div>
           ) : <p className="text-[12.5px] text-graphite">No files uploaded in this session yet. Upload one in Analytics, or use “Upload a file”.</p>)}
+          {src === "app" && (
+            <AppConnectors tabularOnly onImported={async (f) => {
+              await loadUploads();
+              setUploadId(f.file_id); setUploadTable(""); setSrc("upload");
+            }} />
+          )}
           {src === "db" && (
             <>
               <input className={cx(field, "font-mono")} placeholder="Connection string, e.g. postgresql://user:pass@host:5432/db"
                 value={db.uri} onChange={(e) => setDb({ ...db, uri: e.target.value })} />
+              <WarehouseConnect onUri={(u) => setDb((d) => ({ ...d, uri: u }))} />
               <div className="grid gap-2 sm:grid-cols-2">
                 <input className={field} placeholder="Schema (optional)" value={db.schema} onChange={(e) => setDb({ ...db, schema: e.target.value })} />
                 <input className={field} placeholder="Table" value={db.table} onChange={(e) => setDb({ ...db, table: e.target.value })} />
@@ -173,28 +207,72 @@ function NewModel({ onStarted }: { onStarted: (id: string) => void }) {
             {ds.label} · {ds.rows.toLocaleString()} rows · {ds.columns.length} columns{ds.truncated ? " (first 200,000 rows)" : ""}
           </p>
           <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_220px]">
-            <label className="text-[12px] text-graphite">Column to predict
-              <select className={cx(field, "mt-1")} value={target} onChange={(e) => { setTarget(e.target.value); setExclude((x) => x.filter((c) => c !== e.target.value)); }}>
-                {ds.suggested_targets.length > 0 && (
-                  <optgroup label="Suggested">{ds.suggested_targets.map((c) => <option key={c}>{c}</option>)}</optgroup>
-                )}
-                <optgroup label="All columns">{ds.columns.map((c) => <option key={c.name}>{c.name}</option>)}</optgroup>
-              </select>
+            <label className="text-[12px] text-graphite">{forecasting ? "Number to forecast" : "Column to predict"}
+              {forecasting ? (
+                <select className={cx(field, "mt-1")} value={target} onChange={(e) => setTarget(e.target.value)}>
+                  <option value={ROWS}>Number of rows (orders, tickets, transactions…)</option>
+                  {numericCols.map((c) => <option key={c.name}>{c.name}</option>)}
+                </select>
+              ) : (
+                <select className={cx(field, "mt-1")} value={target} onChange={(e) => { setTarget(e.target.value); setExclude((x) => x.filter((c) => c !== e.target.value)); }}>
+                  {ds.suggested_targets.length > 0 && (
+                    <optgroup label="Suggested">{ds.suggested_targets.map((c) => <option key={c}>{c}</option>)}</optgroup>
+                  )}
+                  <optgroup label="All columns">{ds.columns.map((c) => <option key={c.name}>{c.name}</option>)}</optgroup>
+                </select>
+              )}
             </label>
             <label className="text-[12px] text-graphite">Kind of prediction
-              <select className={cx(field, "mt-1")} value={task} onChange={(e) => setTask(e.target.value)}>
+              <select className={cx(field, "mt-1")} value={task} onChange={(e) => pickTask(e.target.value)}>
                 <option value="auto">Decide for me</option>
                 <option value="classification">A category (yes/no, segment…)</option>
                 <option value="regression">A number (amount, price…)</option>
+                <option value="forecast">A number over time (forecast){dateCols.length ? "" : " – needs a date column"}</option>
               </select>
             </label>
           </div>
-          {targetCol && (
+          {forecasting && (
+            <div className="mt-3 grid gap-3 sm:grid-cols-4">
+              <label className="text-[12px] text-graphite">Date column
+                <select className={cx(field, "mt-1")} value={fc.date_column} onChange={(e) => setFc({ ...fc, date_column: e.target.value })}>
+                  {!fc.date_column && <option value="">Choose…</option>}
+                  {dateCols.length > 0 && <optgroup label="Dates">{dateCols.map((c) => <option key={c}>{c}</option>)}</optgroup>}
+                  <optgroup label="All columns">{ds.columns.filter((c) => !dateCols.includes(c.name)).map((c) => <option key={c.name}>{c.name}</option>)}</optgroup>
+                </select>
+              </label>
+              <label className="text-[12px] text-graphite">Per
+                <select className={cx(field, "mt-1")} value={fc.frequency} onChange={(e) => setFc({ ...fc, frequency: e.target.value })}>
+                  <option value="auto">Decide from the dates</option>
+                  <option value="D">Day</option><option value="W">Week</option><option value="MS">Month</option>
+                  <option value="QS">Quarter</option><option value="YS">Year</option>
+                </select>
+              </label>
+              <label className="text-[12px] text-graphite">Periods ahead
+                <input className={cx(field, "mt-1")} type="number" min={0} max={366} placeholder="Default"
+                  value={fc.horizon || ""} onChange={(e) => setFc({ ...fc, horizon: Math.max(0, Number(e.target.value) || 0) })} />
+              </label>
+              <label className="text-[12px] text-graphite">Combine rows by
+                <select className={cx(field, "mt-1")} value={target === ROWS ? "sum" : fc.agg} disabled={target === ROWS}
+                  onChange={(e) => setFc({ ...fc, agg: e.target.value })}>
+                  <option value="sum">Sum (sales, amounts)</option>
+                  <option value="mean">Average (prices, rates)</option>
+                </select>
+              </label>
+            </div>
+          )}
+          {forecasting && (
+            <p className="mt-2 text-[12px] text-graphite">
+              Rows are added up per period, then seven methods are backtested on periods they never saw. Default horizon: 30 days,
+              12 weeks, 6 months, 4 quarters or 3 years. Every loaded row is used.
+            </p>
+          )}
+          {!forecasting && targetCol && (
             <p className="mt-2 text-[12px] text-graphite">
               {targetCol.unique} different values{targetCol.sample.length ? `, e.g. ${targetCol.sample.slice(0, 3).join(", ")}` : ""}
               {targetCol.missing_pct ? ` · ${targetCol.missing_pct}% empty (those rows are skipped)` : ""}
             </p>
           )}
+          {!forecasting && (<>
           <p className="mt-4 text-[12px] text-graphite">
             Leave out columns that are only known <em>after</em> the outcome (they make the model look better than it is):
           </p>
@@ -213,8 +291,11 @@ function NewModel({ onStarted }: { onStarted: (id: string) => void }) {
               </tbody>
             </table>
           </div>
+          </>)}
           <div className="mt-4 flex items-center gap-3">
-            <button onClick={train} disabled={!target || !!busy} className={btn}>Train models · 30 credits</button>
+            <button onClick={train} disabled={!target || !!busy || (forecasting && !fc.date_column)} className={btn}>
+              {forecasting ? "Forecast · 30 credits" : "Train models · 30 credits"}
+            </button>
             <span className="text-[11.5px] text-mute">Refunded if training fails. Takes about a minute.</span>
           </div>
         </section>
@@ -255,7 +336,7 @@ function JobView({ id, onDeleted, onChange }: { id: string; onDeleted: () => voi
     <>
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="font-serif text-[28px] text-ink">Predict {job.target}</h2>
+          <h2 className="font-serif text-[28px] text-ink">{jobTitle(job.task, job.target)}</h2>
           <p className="text-[12.5px] text-graphite">{job.dataset_label}{job.rows_used ? ` · ${job.rows_used.toLocaleString()} rows` : ""}{job.task ? ` · ${job.task}` : ""}</p>
         </div>
         {!live && (
@@ -300,13 +381,20 @@ function JobView({ id, onDeleted, onChange }: { id: string; onDeleted: () => voi
             </section>
           )}
 
+          {job.task === "forecast" && job.forecast && job.series && <ForecastPanel job={job} />}
+
           <section className="mt-5 grid gap-5 lg:grid-cols-2">
             <div className="border border-rule bg-white p-5">
               <h3 className="text-[13px] font-semibold text-ink">Leaderboard</h3>
-              <p className="text-[11.5px] text-mute">{job.metric} in cross-validation (higher is better)</p>
+              <p className="text-[11.5px] text-mute">
+                {job.lower_is_better ? `${job.metric}: average error per ${job.series?.label || "period"} in backtests (lower is better)`
+                  : `${job.metric} in cross-validation (higher is better)`}
+              </p>
               <ul className="mt-3 space-y-2">
                 {job.leaderboard.map((r, i) => {
-                  const w = Math.max(0, Math.min(1, r.score)) * 100;
+                  const bestScore = Math.min(...job.leaderboard.map((x) => x.score));
+                  const w = job.lower_is_better ? (r.score > 0 ? Math.min(1, bestScore / r.score) : 1) * 100
+                    : Math.max(0, Math.min(1, r.score)) * 100;
                   return (
                     <li key={r.name}>
                       <div className="flex justify-between text-[12.5px]">
@@ -321,6 +409,20 @@ function JobView({ id, onDeleted, onChange }: { id: string; onDeleted: () => voi
                 })}
               </ul>
             </div>
+            {job.task === "forecast" ? (
+            <div className="border border-rule bg-white p-5">
+              <h3 className="text-[13px] font-semibold text-ink">
+                {num(ho.backtests, 0)} backtest{ho.backtests === 1 ? "" : "s"} · {num(ho.periods, 0)} {job.series?.label}s it never saw
+              </h3>
+              <dl className="mt-3 grid grid-cols-2 gap-3 text-[12.5px]">
+                <div><dt className="text-mute">Avg. error (MAE)</dt><dd className="font-mono text-[15px] text-ink">{num(ho.mae)}</dd></div>
+                <div><dt className="text-mute">RMSE</dt><dd className="font-mono text-[15px] text-ink">{num(ho.rmse)}</dd></div>
+                <div><dt className="text-mute">Error as % (sMAPE)</dt><dd className="font-mono text-[15px] text-ink">{typeof ho.smape === "number" ? `${(ho.smape * 100).toFixed(1)}%` : "–"}</dd></div>
+                <div><dt className="text-mute">vs seasonal naive (MASE)</dt><dd className="font-mono text-[15px] text-ink">{num(ho.mase, 2)}</dd></div>
+              </dl>
+              <p className="mt-3 text-[11.5px] text-mute">MASE below 1 = better than repeating the same period of the last cycle.</p>
+            </div>
+            ) : (
             <div className="border border-rule bg-white p-5">
               <h3 className="text-[13px] font-semibold text-ink">On {num(ho.rows, 0)} rows it never saw</h3>
               <dl className="mt-3 grid grid-cols-2 gap-3 text-[12.5px]">
@@ -341,8 +443,18 @@ function JobView({ id, onDeleted, onChange }: { id: string; onDeleted: () => voi
                 </table>
               )}
             </div>
+            )}
           </section>
 
+          {job.task === "forecast" ? (
+            job.explanation && job.explanation.drivers.length > 0 && (
+              <section className="mt-5 border border-rule bg-white p-5">
+                <h3 className="text-[13px] font-semibold text-ink">Patterns in the history</h3>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-[12.5px] text-ink">{job.explanation.drivers.map((d) => <li key={d}>{d}</li>)}</ul>
+                {job.explanation.caveats.length > 0 && <p className="mt-3 text-[11.5px] text-mute">{job.explanation.caveats.join(" ")}</p>}
+              </section>
+            )
+          ) : (
           <section className="mt-5 border border-rule bg-white p-5">
             <h3 className="text-[13px] font-semibold text-ink">What drives the prediction</h3>
             {job.drivers[0]?.about && <p className="text-[11.5px] text-mute">Effects shown on the {job.drivers[0].about}</p>}
@@ -369,16 +481,97 @@ function JobView({ id, onDeleted, onChange }: { id: string; onDeleted: () => voi
               <p className="mt-3 text-[11.5px] text-mute">Not used: {Object.entries(job.dropped).map(([c, why]) => `${c} (${why})`).join(" · ")}</p>
             )}
           </section>
+          )}
 
           {job.inputs && job.inputs.length > 0 && <TryIt job={job} />}
 
+          {job.task === "forecast" ? (
+            <p className="mt-5 text-[11.5px] text-mute">
+              Saved as <span className="font-mono">{job.model_file}</span>. Train again when a new {job.series?.label} of data arrives.
+            </p>
+          ) : (
           <p className="mt-5 text-[11.5px] text-mute">
             Deployed as <span className="font-mono">{job.model_ref}</span>: score a whole file in Analytics → Model lab, or POST it to
             <span className="font-mono"> /api/predict</span>.
           </p>
+          )}
         </>
       )}
     </>
+  );
+}
+
+// ── Forecast: history + forecast line with its ≈80% range, table, CSV ───────
+
+function ForecastPanel({ job }: { job: Job }) {
+  const f = job.forecast!, s = job.series!;
+  const hist = f.history, fut = f.forecast;
+  const all = [...hist.map((p) => p.value), ...fut.flatMap((p) => [p.lo ?? p.value, p.hi ?? p.value])];
+  const lo = Math.min(0, ...all), hi = Math.max(...all) || 1;
+  const W = 760, H = 260, L = 56, R = 12, T = 12, B = 28;
+  const n = hist.length + fut.length;
+  const x = (i: number) => L + (i / Math.max(n - 1, 1)) * (W - L - R);
+  const y = (v: number) => T + (1 - (v - lo) / (hi - lo || 1)) * (H - T - B);
+  const line = (pts: [number, number][]) => pts.map(([a, b], i) => `${i ? "L" : "M"}${a.toFixed(1)},${b.toFixed(1)}`).join(" ");
+  const histPath = line(hist.map((p, i) => [x(i), y(p.value)]));
+  const lastH = hist[hist.length - 1];
+  const fcPts: [number, number][] = [[x(hist.length - 1), y(lastH.value)], ...fut.map((p, i) => [x(hist.length + i), y(p.value)] as [number, number])];
+  const band = [...fut.map((p, i) => `${i ? "L" : "M"}${x(hist.length + i).toFixed(1)},${y(p.hi ?? p.value).toFixed(1)}`),
+    ...fut.slice().reverse().map((p, i) => `L${x(n - 1 - i).toFixed(1)},${y(p.lo ?? p.value).toFixed(1)}`), "Z"].join(" ");
+  const ticks = [lo, lo + (hi - lo) / 2, hi];
+  const fmt = (v: number) => Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : Math.abs(v) >= 1e3 ? `${(v / 1e3).toFixed(1)}k` : v.toFixed(v < 10 ? 1 : 0);
+  const labelIdx = [0, hist.length - 1, n - 1];
+  const dates = [...hist.map((p) => p.date), ...fut.map((p) => p.date)];
+  const csv = () => {
+    const rows = ["date,kind,value,low_80,high_80", ...hist.map((p) => `${p.date},actual,${p.value},,`),
+      ...fut.map((p) => `${p.date},forecast,${p.value},${p.lo ?? ""},${p.hi ?? ""}`)];
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" }));
+    a.download = `forecast_${job.target === ROWS ? "rows" : job.target}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  return (
+    <section className="mt-5 border border-rule bg-white p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-[13px] font-semibold text-ink">
+          Next {fut.length} {s.label}s · {targetName(job.target)} {s.agg === "mean" ? "(average" : s.agg === "count" ? "(count" : "(total"} per {s.label})
+        </h3>
+        <button onClick={csv} className={ghost}>Download CSV</button>
+      </div>
+      <p className="text-[11.5px] text-mute">History {s.start} → {s.end} · {s.periods} {s.label}s · shaded: {f.range}</p>
+      <svg viewBox={`0 0 ${W} ${H}`} className="mt-3 w-full" role="img" aria-label={`Forecast of ${targetName(job.target)}`}>
+        {ticks.map((t) => (
+          <g key={t}>
+            <line x1={L} x2={W - R} y1={y(t)} y2={y(t)} className="text-rule" stroke="currentColor" strokeWidth={1} />
+            <text x={L - 6} y={y(t) + 4} textAnchor="end" className="fill-current text-mute" fontSize={10}>{fmt(t)}</text>
+          </g>
+        ))}
+        <path d={band} className="text-signal" fill="currentColor" fillOpacity={0.15} />
+        <path d={histPath} className="text-ink" stroke="currentColor" fill="none" strokeWidth={1.6} />
+        <path d={line(fcPts)} className="text-signal" stroke="currentColor" fill="none" strokeWidth={2} strokeDasharray="5 3" />
+        <line x1={x(hist.length - 1)} x2={x(hist.length - 1)} y1={T} y2={H - B} className="text-mute" stroke="currentColor" strokeDasharray="2 3" />
+        {labelIdx.map((i, k) => (
+          <text key={k} x={x(i)} y={H - 8} textAnchor={k === 0 ? "start" : k === 2 ? "end" : "middle"} className="fill-current text-mute" fontSize={10}>{dates[i]}</text>
+        ))}
+      </svg>
+      <div className="mt-3 max-h-56 overflow-y-auto border border-rule">
+        <table className="w-full text-[12px]">
+          <thead className="sticky top-0 bg-sheet text-left text-mute">
+            <tr><th className="px-2 py-1 font-normal">{s.label[0].toUpperCase() + s.label.slice(1)} starting</th><th className="px-2 py-1 text-right font-normal">Forecast</th><th className="px-2 py-1 text-right font-normal">≈80% range</th></tr>
+          </thead>
+          <tbody>
+            {fut.map((p) => (
+              <tr key={p.date} className="border-t border-rule">
+                <td className="px-2 py-1">{p.date}</td>
+                <td className="px-2 py-1 text-right font-mono">{num(p.value, 2)}</td>
+                <td className="px-2 py-1 text-right font-mono text-graphite">{num(p.lo, 2)} – {num(p.hi, 2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 

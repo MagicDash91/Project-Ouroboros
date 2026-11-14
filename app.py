@@ -70,6 +70,7 @@ tasks: dict       = {}
 log_queues: dict  = {}
 hitl_events: dict = {}
 _analysis_lock    = threading.Lock()
+import tools.run_context  # noqa: E402,F401  — per-run database; threads inherit the run's context
 _uploaded_files: dict = {}
 
 # Finished runs are also written to disk so Chat, Graph and Results survive a
@@ -520,7 +521,8 @@ def _merge_db_sources(sqlite_uri: str, db_uri: str, task_id: str) -> str:
 def _load_active_df_for_model(artifact: dict):
     """Best-effort: pull a sample from the active DB table whose columns best
     match the model's features (needed for SHAP)."""
-    uri = os.environ.get("ACTIVE_DB_URI")
+    from tools.run_context import last_run_db
+    uri = last_run_db()
     if not uri:
         try:
             from config import POSTGRES_URI
@@ -665,10 +667,10 @@ def _run_analysis(task_id: str, req: CombinedRequest):
                 _active_db = _db_uri_to_merge
         # else: no structured data — document/research-only mode
 
-        if _active_db:
-            os.environ["ACTIVE_DB_URI"] = _active_db
-        elif "ACTIVE_DB_URI" in os.environ:
-            del os.environ["ACTIVE_DB_URI"]
+        # This run's database lives in a ContextVar (tools/run_context.py), not os.environ, so
+        # other requests and runs never see it.
+        from tools.run_context import set_db as _set_run_db, run_db as _run_db
+        _set_run_db(_active_db)
 
         # ── Build document context string ─────────────────────────────────
         _doc_context = ""
@@ -793,7 +795,7 @@ def _run_analysis(task_id: str, req: CombinedRequest):
         # ── Data engineering: dbt models (a guaranteed pipeline step, not an agent's choice) ──
         crew_request = analysis_request
         from config import DBT_MODELING
-        _cur_db = os.environ.get("ACTIVE_DB_URI") or _active_db or ""
+        _cur_db = _run_db() or _active_db or ""
         if DBT_MODELING and _cur_db.startswith(("postgresql", "postgres")):
             try:
                 from tools.dbt_builder import build_dbt_project, with_mart_search_path
@@ -806,7 +808,7 @@ def _run_analysis(task_id: str, req: CombinedRequest):
                                f"{' — marts: ' + ', '.join(m['name'] for m in _marts) if _marts else ''}",
                       "success" if _run["ok"] else "warn")
                 if _marts:
-                    os.environ["ACTIVE_DB_URI"] = with_mart_search_path(_cur_db)
+                    _set_run_db(with_mart_search_path(_cur_db))
                     crew_request = (
                         f"{analysis_request}\n\n[Data engineering already done] dbt built and tested these "
                         f"analysis-ready tables ({_passed}/{len(_run['tests'])} dbt tests passed): "
@@ -932,8 +934,8 @@ def _run_analysis(task_id: str, req: CombinedRequest):
             _push(task_id, f"  Zep knowledge graph (non-critical): {_ge}", "warn")
 
         # ── Automatic dashboard (one Claude design call; viewing/filtering is LLM-free) ──
-        # The Data Engineer's dbt build (if any) points ACTIVE_DB_URI at the tested marts.
-        _dash_db = os.environ.get("ACTIVE_DB_URI") or _active_db
+        # The Data Engineer's dbt build (if any) points the run's database at the tested marts.
+        _dash_db = _run_db() or _active_db
         _dash_table = None                     # prefer this run's tested dbt mart, named explicitly
         try:
             from tools.dbt_builder import latest_run
@@ -3533,6 +3535,20 @@ async def api_connectors_import(req: ConnectorImportRequest):
     return {**info, "source": connectors.CONNECTORS[req.connector]["name"], "size": len(data)}
 
 
+@app.post("/api/connectors/bigquery-key")
+async def api_bigquery_key(file: UploadFile = File(...)):
+    """Store a BigQuery service-account key on the server; the connection string then uses ?key=<id>
+    instead of carrying the key (features/db_connect.save_bigquery_key)."""
+    from features.db_connect import ConnectionStringError, save_bigquery_key
+    raw = await file.read(64 * 1024 + 1)
+    if len(raw) > 64 * 1024:
+        raise HTTPException(status_code=400, detail="That file is too big to be a service-account key.")
+    try:
+        return save_bigquery_key(raw)
+    except ConnectionStringError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ── dbt data models (tools/dbt_builder.py) ─────────────────────────────────────
 
 class DbtBuildRequest(BaseModel):
@@ -3711,8 +3727,12 @@ async def api_automl_get_dataset(did: str):
 class AutoMLJobRequest(BaseModel):
     dataset_id: str
     target: str
-    task: str = "auto"
+    task: str = "auto"            # auto | classification | regression | forecast
     exclude: List[str] = []
+    date_column: str = ""         # forecast only
+    horizon: int = 0              # forecast only: periods ahead (0 = default for the frequency)
+    frequency: str = "auto"       # forecast only: auto | D | W | MS | QS | YS
+    agg: str = "sum"              # forecast only: sum | mean per period
 
 
 @app.post("/api/automl/jobs")
@@ -3720,7 +3740,8 @@ async def api_automl_start(req: AutoMLJobRequest):
     """Train and compare models for one target column (charged as automl_train, refunded on failure)."""
     from features import automl
     return await asyncio.to_thread(_automl_call, automl.start_job, req.dataset_id, req.target[:200],
-                                   req.task, req.exclude[:200])
+                                   req.task[:20], req.exclude[:200], req.date_column[:200], req.horizon,
+                                   req.frequency[:4], req.agg[:4])
 
 
 @app.get("/api/automl/jobs")

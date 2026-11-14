@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { BarChart, DonutChart, KpiCard, LineChart, PBI, Slicer, TableVisual, Tile, setCurrency } from "@/components/dashboard/pbi";
 import { ColorMenu, GripIcon, TypeGlyph, useDragSort } from "@/components/dashboard/editing";
 import { AppConnectors } from "@/components/AppConnectors";
+import { WarehouseConnect } from "@/components/WarehouseConnect";
 import { Markdown } from "@/components/Markdown";
 import { OpenStudio } from "@/components/studio/OpenStudio";
 import { QualityReport, type Quality } from "@/components/views/MetricsView";
@@ -329,6 +330,7 @@ function CreatePanel({ onStarted }: { onStarted: (jobId: string, id: string) => 
             <input value={dbUri} onChange={(e) => { setDbUri(e.target.value); setDbTest(null); }} type="password" autoComplete="off"
               placeholder="postgresql://user:password@host:5432/database (also MySQL, SQL Server, Snowflake, BigQuery …)"
               className={field} style={{ borderColor: PBI.border }} />
+            <WarehouseConnect onUri={(u) => { setDbUri(u); setDbTest(null); }} />
             <div className="flex flex-wrap items-center gap-2">
               <input value={schema} onChange={(e) => setSchema(e.target.value)} placeholder="Schema (optional)"
                 className={`${field} max-w-[220px]`} style={{ borderColor: PBI.border }} />

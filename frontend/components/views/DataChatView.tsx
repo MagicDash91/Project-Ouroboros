@@ -19,6 +19,7 @@ import { Followups, GlossaryPanel, OverviewCard } from "../datachat/Extras";
 import { OpenStudio } from "../studio/OpenStudio";
 import { ShareButton } from "../studio/ShareDialog";
 import { AppConnectors } from "../AppConnectors";
+import { WarehouseConnect } from "../WarehouseConnect";
 import { QualityReport, type Quality } from "./MetricsView";
 import { ChevronDown, ChevronRight, Send, Upload, X } from "../icons";
 import { Markdown } from "../Markdown";
@@ -561,6 +562,7 @@ function NewSource({ onCreated }: { onCreated: (s: DataChatSession) => void }) {
               placeholder="postgresql://user:password@host:5432/dbname"
               className="w-full border-0 border-b border-rule bg-transparent py-2 font-mono text-[13px] focus:border-ink focus:outline-none"
             />
+            <WarehouseConnect className="mt-2" onUri={(u) => { setUri(u); setTest(null); }} />
           </Field>
           <Field label="Schema (optional)">
             <input

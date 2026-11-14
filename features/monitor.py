@@ -63,7 +63,8 @@ def _resolve_db_uri(db_uri: str = "") -> str:
     if db_uri:
         return db_uri
     from config import POSTGRES_URI
-    return os.environ.get("ACTIVE_DB_URI") or POSTGRES_URI
+    from tools.run_context import run_db, last_run_db
+    return run_db() or last_run_db()
 
 
 def _compute_metrics(df: pd.DataFrame, metric_columns: list, target_column: str = "") -> dict:

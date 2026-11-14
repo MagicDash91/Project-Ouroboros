@@ -25,7 +25,8 @@ def _resolve_db_uri(db_uri: str = "") -> str:
         from features.db_connect import normalize_db_uri
         return normalize_db_uri(db_uri)
     from config import POSTGRES_URI
-    return os.environ.get("ACTIVE_DB_URI") or POSTGRES_URI
+    from tools.run_context import run_db, last_run_db
+    return run_db() or last_run_db()
 
 
 def _engine(uri: str):
